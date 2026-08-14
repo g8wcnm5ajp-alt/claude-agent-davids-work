@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#
+# Fake `ssh` for local testing: put test/bin at the front of PATH and it
+# intercepts the `ssh user@host ...` call made by junos-interface-poe-bounce.sh,
+# ignoring the connection args and dropping straight into the mock CLI.
+
+exec "$(dirname "${BASH_SOURCE[0]}")/../mock-junos-cli.sh"
