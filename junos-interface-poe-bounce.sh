@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-SETTLE_SECS=3
+SETTLE_SECS=5
 SSH_TIMEOUT=20
 MODE="both"
 ACTION=""
@@ -152,8 +152,10 @@ expect -f - <<'EXPECT_SCRIPT'
 
     # --- check current interface state ---
     if {$do_iface} {
+        log_user 0
         send -- "show interfaces $iface\r"
         expect -re $op_prompt
+        log_user 1
         # Real Junos reports a disabled interface as "Administratively down",
         # not "Disabled" -- only enabled interfaces actually say "Enabled".
         if {[regexp -nocase {Administratively down} $expect_out(buffer)]} {
@@ -173,8 +175,10 @@ expect -f - <<'EXPECT_SCRIPT'
 
     # --- check current PoE state ---
     if {$do_poe} {
+        log_user 0
         send -- "show poe interface $iface\r"
         expect -re $op_prompt
+        log_user 1
         if {[regexp -nocase {administrative status:\s*(Enabled|Disabled)} $expect_out(buffer) -> m]} {
             set poe_state [string tolower $m]
         } else {
@@ -221,14 +225,29 @@ expect -f - <<'EXPECT_SCRIPT'
         sleep $settle
     }
 
-    # --- always report final status ---
+    # --- always report final status (physical link only, not the full dump) ---
     puts "\n--- current state of $iface ---\n"
+
+    log_user 0
     send -- "show interfaces $iface\r"
     expect -re $op_prompt
+    log_user 1
+    if {[regexp -nocase {Physical link is (Up|Down)} $expect_out(buffer) -> link]} {
+        puts "Physical link: $link"
+    } else {
+        puts "Physical link: unknown"
+    }
 
     if {$do_poe} {
+        log_user 0
         send -- "show poe interface $iface\r"
         expect -re $op_prompt
+        log_user 1
+        if {[regexp -nocase {operational status:\s*(ON|OFF)} $expect_out(buffer) -> oper]} {
+            puts "PoE operational status: $oper"
+        } else {
+            puts "PoE operational status: unknown"
+        }
     }
 
     send -- "exit\r"

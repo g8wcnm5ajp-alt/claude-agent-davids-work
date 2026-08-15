@@ -82,11 +82,13 @@ run_case() {
     echo
 }
 
-# 1. Both enabled -> request disable both: both should change.
+# 1. Both enabled -> request disable both: both should change. Also verifies
+#    the final report is a concise link/PoE summary, not the full raw dump.
 run_case "both enabled, disable both -> both act" Enabled Enabled \
     -u testuser -H mock-switch -i ge-0/0/1 -a disable -m both -w 1 \
     --expect "set interfaces ge-0/0/1 disable" "set poe interface ge-0/0/1 disable" "commit complete" \
-    --refute "already disabled -- skipping"
+             "Physical link: Down" "PoE operational status: OFF" \
+    --refute "already disabled -- skipping" "Interface index:" "SNMP ifIndex" "PoE interface status:"
 
 # 2. Both already disabled -> request disable both: both should skip.
 run_case "both disabled, disable both -> both skip" Disabled Disabled \
