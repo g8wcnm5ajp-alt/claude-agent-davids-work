@@ -89,14 +89,14 @@ expect -f - <<'EXPECT_SCRIPT'
     spawn ssh -o StrictHostKeyChecking=accept-new $user@$host
 
     expect {
-        -re "(?i)password:" { send -- "$pass\r" }
+        -re {[Pp]assword:} { send -- "$pass\r" }
         timeout             { puts "\nERROR: timed out waiting for password prompt"; exit 1 }
         eof                 { puts "\nERROR: connection closed before login"; exit 1 }
     }
 
     expect {
         -re $op_prompt { }
-        -re "(?i)(permission denied|authentication failed)" {
+        -re {[Pp]ermission [Dd]enied|[Aa]uthentication [Ff]ailed} {
             puts "\nERROR: login failed"; exit 1
         }
         timeout { puts "\nERROR: timed out waiting for login prompt"; exit 1 }
