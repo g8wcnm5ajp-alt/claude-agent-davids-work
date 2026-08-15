@@ -11,11 +11,12 @@
 # Requires: expect
 #
 # Usage:
-#   ./junos-interface-poe-bounce.sh -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>]
+#   ./junos-interface-poe-bounce.sh -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
 #
-# Password is read from the JUNOS_PASSWORD env var if set, otherwise prompted
-# for interactively (never pass it as a bare CLI argument -- it would be
-# visible to anyone running `ps`).
+# Password resolution, in order of preference: -p flag, then JUNOS_PASSWORD
+# env var, then an interactive prompt. Prefer the env var or the prompt over
+# -p where possible -- a password passed on the command line is visible to
+# anyone on the box running `ps`.
 
 set -euo pipefail
 
@@ -26,7 +27,7 @@ ACTION=""
 
 usage() {
     cat <<USAGE
-Usage: $0 -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>]
+Usage: $0 -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
 
   -u  Username to log into the switch with
   -H  Switch management IP or hostname
@@ -34,12 +35,13 @@ Usage: $0 -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both
   -a  Desired state: enable or disable
   -m  What to apply it to: both (default), interface, or poe
   -w  Seconds to wait after a change before reporting final status (default: ${SETTLE_SECS})
+  -p  Password (visible via \`ps\` to anyone on the box -- prefer \$JUNOS_PASSWORD or the prompt)
   -h  Show this help
 
 If the interface (or PoE) is already in the requested state, that part is
 skipped -- no command is sent for it.
 
-Password is taken from \$JUNOS_PASSWORD if set, otherwise you'll be prompted.
+Password resolution order: -p flag, then \$JUNOS_PASSWORD, then an interactive prompt.
 USAGE
     exit 1
 }
@@ -47,8 +49,9 @@ USAGE
 USERNAME=""
 SWITCH_IP=""
 INTERFACE=""
+PASSWORD_ARG=""
 
-while getopts "u:H:i:m:a:w:h" opt; do
+while getopts "u:H:i:m:a:w:p:h" opt; do
     case "$opt" in
         u) USERNAME="$OPTARG" ;;
         H) SWITCH_IP="$OPTARG" ;;
@@ -56,6 +59,7 @@ while getopts "u:H:i:m:a:w:h" opt; do
         m) MODE="$OPTARG" ;;
         a) ACTION="$OPTARG" ;;
         w) SETTLE_SECS="$OPTARG" ;;
+        p) PASSWORD_ARG="$OPTARG" ;;
         h) usage ;;
         *) usage ;;
     esac
@@ -81,7 +85,9 @@ if ! command -v expect >/dev/null 2>&1; then
     exit 1
 fi
 
-if [[ -z "${JUNOS_PASSWORD:-}" ]]; then
+if [[ -n "$PASSWORD_ARG" ]]; then
+    JUNOS_PASSWORD="$PASSWORD_ARG"
+elif [[ -z "${JUNOS_PASSWORD:-}" ]]; then
     read -r -s -p "Password for ${USERNAME}@${SWITCH_IP}: " JUNOS_PASSWORD
     echo
 fi
@@ -115,7 +121,9 @@ expect -f - <<'EXPECT_SCRIPT'
     set op_prompt  {[%>] $}
     set cfg_prompt {[%#] $}
 
-    spawn ssh -o StrictHostKeyChecking=accept-new $user@$host
+    # "no" rather than "accept-new" for compatibility -- accept-new needs
+    # OpenSSH 7.6+, and some management hosts still ship 7.4.
+    spawn ssh -o StrictHostKeyChecking=no $user@$host
 
     expect {
         -re {[Pp]assword:} { send -- "$pass\r" }
@@ -131,6 +139,14 @@ expect -f - <<'EXPECT_SCRIPT'
         timeout { puts "\nERROR: timed out waiting for login prompt"; exit 1 }
     }
 
+    # Disable the CLI's "---(more)---" pager for this session. Without this,
+    # any output taller than the terminal (e.g. a full "show interfaces")
+    # stalls waiting for a keypress, and our subsequent blind sends get
+    # consumed as pager navigation keystrokes instead of reaching the CLI --
+    # corrupting every command after it.
+    send -- "set cli screen-length 0\r"
+    expect -re $op_prompt
+
     set need_iface_change 0
     set need_poe_change 0
 
@@ -138,8 +154,12 @@ expect -f - <<'EXPECT_SCRIPT'
     if {$do_iface} {
         send -- "show interfaces $iface\r"
         expect -re $op_prompt
-        if {[regexp -nocase {Physical interface: [^,]+, (Enabled|Disabled)} $expect_out(buffer) -> m]} {
-            set iface_state [string tolower $m]
+        # Real Junos reports a disabled interface as "Administratively down",
+        # not "Disabled" -- only enabled interfaces actually say "Enabled".
+        if {[regexp -nocase {Administratively down} $expect_out(buffer)]} {
+            set iface_state "disabled"
+        } elseif {[regexp -nocase {Physical interface: [^,]+, Enabled} $expect_out(buffer)]} {
+            set iface_state "enabled"
         } else {
             set iface_state "unknown"
         }

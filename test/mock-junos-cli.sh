@@ -63,9 +63,13 @@ while true; do
             ;;
         "show interfaces "*)
             iface="${cmd#show interfaces }"
-            link="Up"
-            [[ "$iface_state" == "Disabled" ]] && link="Down"
-            echo "Physical interface: ${iface}, ${iface_state}, Physical link is ${link}"
+            # Real Junos reports a disabled interface as "Administratively
+            # down", not "Disabled" -- match that wording here.
+            if [[ "$iface_state" == "Disabled" ]]; then
+                echo "Physical interface: ${iface}, Administratively down, Physical link is Down"
+            else
+                echo "Physical interface: ${iface}, Enabled, Physical link is Up"
+            fi
             echo "  Interface index: 128, SNMP ifIndex: 501"
             echo "  Link-level type: Ethernet, MTU: 1514, Speed: 1000mbps"
             ;;
