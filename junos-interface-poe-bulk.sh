@@ -2,8 +2,12 @@
 #
 # junos-interface-poe-bulk.sh
 #
-# Bulk / CSV-driven version of junos-interface-poe-bounce.sh. Reads a CSV
-# file where each row is:
+# Bulk / CSV-driven version of junos-interface-poe-bounce.sh. Requires
+# expect -- if that's not available and can't be installed (e.g. a locked-
+# down EM/appliance host), use junos-interface-poe-bulk.py instead, which
+# is functionally identical but uses only python3 stdlib.
+#
+# Reads a CSV file where each row is:
 #
 #   appliance_ip,switch_ip,switch_port
 #
