@@ -1,3 +1,4 @@
 *.sh text eol=lf
 *.py text eol=lf
+*.csv text eol=lf
 test/bin/* text eol=lf
