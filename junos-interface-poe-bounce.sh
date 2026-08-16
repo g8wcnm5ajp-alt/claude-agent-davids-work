@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-SETTLE_SECS=5
+SETTLE_SECS=9
 SSH_TIMEOUT=20
 MODE="both"
 ACTION=""
