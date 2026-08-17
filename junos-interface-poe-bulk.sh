@@ -290,16 +290,29 @@ run_row() {
             if {!$need_iface_change && !$need_poe_change} {
                 puts "  $n. (nothing to change -- $iface already $desired)"
                 incr n
+                if {$do_iface} {
+                    puts "     would have run: $verb interfaces $iface disable"
+                }
+                if {$do_poe} {
+                    puts "     would have run: $verb poe interface $iface disable"
+                }
+                if {$do_iface || $do_poe} {
+                    puts "                      commit"
+                }
             } else {
                 puts "  $n. configure"
                 incr n
                 if {$need_iface_change} {
                     puts "  $n. $verb interfaces $iface disable"
                     incr n
+                } elseif {$do_iface} {
+                    puts "     (interface already $desired -- would have run: $verb interfaces $iface disable)"
                 }
                 if {$need_poe_change} {
                     puts "  $n. $verb poe interface $iface disable"
                     incr n
+                } elseif {$do_poe} {
+                    puts "     (PoE already $desired -- would have run: $verb poe interface $iface disable)"
                 }
                 puts "  $n. commit"
                 incr n
