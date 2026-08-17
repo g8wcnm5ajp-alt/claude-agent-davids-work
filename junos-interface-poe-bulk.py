@@ -26,7 +26,13 @@
 # switch and skip the second prompt entirely.
 #
 # Usage:
-#   ./junos-interface-poe-bulk.py -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
+#   ./junos-interface-poe-bulk.py -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
+#
+# -c: for each row, after logging in and checking current state, print
+# exactly which commands are about to be sent (or that nothing needs to
+# change) and pause for a y/N confirmation before applying them. A "no"
+# skips that row's changes but continues the batch -- it's tracked
+# separately from real failures in the summary.
 #
 # CSV format: one row per line, no header, e.g.:
 #   192.168.1.10,192.168.22.223,ge-0/0/11
@@ -52,6 +58,8 @@ import select
 import shutil
 import sys
 import time
+
+VERSION = "1.1.1"
 
 SETTLE_SECS_DEFAULT = 9
 SSH_TIMEOUT = 20
@@ -89,7 +97,7 @@ def send(fd, s):
     os.write(fd, s.encode())
 
 
-def run_row(switch_user, password, appliance, switch, port, mode, action, settle):
+def run_row(switch_user, password, appliance, switch, port, mode, action, settle, confirm):
     desired = 'enabled' if action == 'enable' else 'disabled'
     do_iface = mode in ('both', 'interface')
     do_poe = mode in ('both', 'poe')
@@ -123,11 +131,11 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
                 pw_sent += 1
                 if pw_sent > 2:
                     print(f"ERROR: too many password prompts, aborting")
-                    return False
+                    return 'failed'
                 send(fd, password + '\r')
                 continue
             print(f"ERROR: login failed or timed out ({name}), {pw_sent} password(s) sent")
-            return False
+            return 'failed'
 
         # Disable the CLI's "---(more)---" pager for this session -- without
         # this, any output taller than the terminal stalls waiting for a
@@ -166,6 +174,27 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
                 print(f"PoE on {port} is already {desired} -- skipping PoE action.")
             else:
                 need_poe_change = True
+
+        # Preview + confirm, if -c was given.
+        declined = False
+        if confirm:
+            verb = 'set' if desired == 'disabled' else 'delete'
+            print(f"\nThe following will be run on {switch}:")
+            if not need_iface_change and not need_poe_change:
+                print(f"  (nothing -- {port} is already {desired})")
+            else:
+                print("  configure")
+                if need_iface_change:
+                    print(f"  {verb} interfaces {port} disable")
+                if need_poe_change:
+                    print(f"  {verb} poe interface {port} disable")
+                print("  commit")
+            answer = input(f"\nContinue with {switch} {port}? [y/N]: ")
+            if not answer.strip().lower().startswith('y'):
+                print(f"Skipped by user -- no changes made for {switch} {port}.")
+                need_iface_change = False
+                need_poe_change = False
+                declined = True
 
         # Apply whatever changes are actually needed, in one commit.
         if need_iface_change or need_poe_change:
@@ -210,7 +239,7 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
 
         send(fd, 'exit\r')
         read_until(fd, {}, 8)  # brief drain while the double-hop unwinds
-        return True
+        return 'declined' if declined else 'ok'
     finally:
         try:
             os.close(fd)
@@ -245,7 +274,11 @@ def main():
                          help=f'Seconds to wait after a change before reporting final status (default: {SETTLE_SECS_DEFAULT})')
     parser.add_argument('-p', dest='password', default=None,
                          help="Password (visible via `ps` to anyone on the box -- prefer $JUNOS_PASSWORD or the prompt)")
+    parser.add_argument('-c', dest='confirm', action='store_true',
+                         help='Preview the exact commands to be run per row and pause for y/N confirmation before applying them')
     args = parser.parse_args()
+
+    print(f"junos-interface-poe-bulk.py v{VERSION}")
 
     if not shutil.which('ssh'):
         print("Error: this script requires 'ssh' to be installed.", file=sys.stderr)
@@ -262,7 +295,9 @@ def main():
     total = 0
     ok = 0
     failed = 0
+    declined = 0
     failed_rows = []
+    declined_rows = []
 
     with open(args.csv_file) as f:
         for raw in f:
@@ -279,14 +314,22 @@ def main():
 
             appliance, switch, port = parts
             total += 1
-            if run_row(args.switch_user, password, appliance, switch, port,
-                       args.mode, args.action, args.settle):
+            status = run_row(args.switch_user, password, appliance, switch, port,
+                              args.mode, args.action, args.settle, args.confirm)
+            if status == 'ok':
                 ok += 1
+            elif status == 'declined':
+                declined += 1
+                declined_rows.append(f"{appliance},{switch},{port}")
             else:
                 failed += 1
                 failed_rows.append(f"{appliance},{switch},{port}")
 
-    print(f"\n=== summary: {ok}/{total} rows succeeded ===")
+    print(f"\n=== summary: {ok}/{total} rows succeeded ({declined} declined by user) ===")
+    if declined_rows:
+        print("Declined rows:")
+        for row in declined_rows:
+            print(f"  - {row}")
     if failed_rows:
         print("Failed rows:")
         for row in failed_rows:

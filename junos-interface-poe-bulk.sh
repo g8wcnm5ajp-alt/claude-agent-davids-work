@@ -28,7 +28,13 @@
 # Requires: expect
 #
 # Usage:
-#   ./junos-interface-poe-bulk.sh -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
+#   ./junos-interface-poe-bulk.sh -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
+#
+# -c: for each row, after logging in and checking current state, print
+# exactly which commands are about to be sent (or that nothing needs to
+# change) and pause for a y/N confirmation before applying them. A "no"
+# skips that row's changes but continues the batch -- it's tracked
+# separately from real failures in the summary.
 #
 # CSV format: one row per line, no header, e.g.:
 #   192.168.1.10,192.168.22.223,ge-0/0/11
@@ -47,6 +53,8 @@
 
 set -uo pipefail   # no -e: one row failing must not abort the batch
 
+VERSION="1.1.1"
+
 SETTLE_SECS=9
 SSH_TIMEOUT=20
 MODE="both"
@@ -55,7 +63,7 @@ CSV_FILE=""
 
 usage() {
     cat <<USAGE
-Usage: $0 -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
+Usage: $0 -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
 
   -s  Username to log into the switch with (via the appliance)
   -f  CSV file: one row per line, "appliance_ip,switch_ip,switch_port"
@@ -63,6 +71,7 @@ Usage: $0 -s <switch-username> -f <csv-file> -a enable|disable [-m both|interfac
   -m  What to apply it to: both (default), interface, or poe
   -w  Seconds to wait after a change before reporting final status (default: ${SETTLE_SECS})
   -p  Password (visible via \`ps\` to anyone on the box -- prefer \$JUNOS_PASSWORD or the prompt)
+  -c  Preview the exact commands to be run per row and pause for y/N confirmation before applying them
   -h  Show this help
 
 The appliance hop is always root@<appliance-ip> via pre-shared keys (no
@@ -78,8 +87,9 @@ USAGE
 
 SWITCH_USERNAME=""
 PASSWORD_ARG=""
+CONFIRM=0
 
-while getopts "s:f:m:a:w:p:h" opt; do
+while getopts "s:f:m:a:w:p:ch" opt; do
     case "$opt" in
         s) SWITCH_USERNAME="$OPTARG" ;;
         f) CSV_FILE="$OPTARG" ;;
@@ -87,6 +97,7 @@ while getopts "s:f:m:a:w:p:h" opt; do
         a) ACTION="$OPTARG" ;;
         w) SETTLE_SECS="$OPTARG" ;;
         p) PASSWORD_ARG="$OPTARG" ;;
+        c) CONFIRM=1 ;;
         h) usage ;;
         *) usage ;;
     esac
@@ -107,6 +118,8 @@ case "$ACTION" in
     *) echo "Error: -a must be one of: enable, disable" >&2; usage ;;
 esac
 
+echo "junos-interface-poe-bulk.sh v${VERSION}"
+
 if ! command -v expect >/dev/null 2>&1; then
     echo "Error: this script requires 'expect' to be installed." >&2
     exit 1
@@ -125,6 +138,7 @@ export JUNOS_MODE="$MODE"
 export JUNOS_ACTION="$ACTION"
 export JUNOS_SETTLE="$SETTLE_SECS"
 export JUNOS_SSH_TIMEOUT="$SSH_TIMEOUT"
+export JUNOS_CONFIRM="$CONFIRM"
 
 trim() {
     local s="$1"
@@ -151,6 +165,7 @@ run_row() {
         set action    $env(JUNOS_ACTION)
         set settle    $env(JUNOS_SETTLE)
         set pass      $env(JUNOS_PASSWORD)
+        set confirm   $env(JUNOS_CONFIRM)
 
         set do_iface [expr {$mode eq "both" || $mode eq "interface"}]
         set do_poe   [expr {$mode eq "both" || $mode eq "poe"}]
@@ -254,6 +269,46 @@ run_row() {
             }
         }
 
+        # --- preview + confirm, if -c was given ---
+        set declined_by_user 0
+        if {$confirm} {
+            set verb [expr {$desired eq "disabled" ? "set" : "delete"}]
+            puts "\nThe following will be run on $host:"
+            if {!$need_iface_change && !$need_poe_change} {
+                puts "  (nothing -- $iface is already $desired)"
+            } else {
+                puts "  configure"
+                if {$need_iface_change} {
+                    puts "  $verb interfaces $iface disable"
+                }
+                if {$need_poe_change} {
+                    puts "  $verb poe interface $iface disable"
+                }
+                puts "  commit"
+            }
+            # expect's own script came in via a heredoc on stdin, so plain
+            # stdin is already exhausted at this point -- read the answer
+            # from the controlling terminal directly instead.
+            set answer ""
+            if {[catch {set tty [open "/dev/tty" "r+"]} err]} {
+                puts "Cannot prompt for confirmation (no controlling terminal: $err) -- skipping this row, no changes made."
+                set need_iface_change 0
+                set need_poe_change 0
+                set declined_by_user 1
+            } else {
+                puts -nonewline $tty "\nContinue with $host $iface? \[y/N\]: "
+                flush $tty
+                gets $tty answer
+                close $tty
+                if {![regexp -nocase {^y} $answer]} {
+                    puts "Skipped by user -- no changes made for $host $iface."
+                    set need_iface_change 0
+                    set need_poe_change 0
+                    set declined_by_user 1
+                }
+            }
+        }
+
         # --- apply whatever changes are actually needed, in one commit ---
         if {$need_iface_change || $need_poe_change} {
             send -- "configure\r"
@@ -314,13 +369,19 @@ run_row() {
 
         send -- "exit\r"
         expect eof
+
+        if {$declined_by_user} {
+            exit 2
+        }
 EXPECT_SCRIPT
 }
 
 TOTAL=0
 OK=0
 FAILED=0
+DECLINED=0
 FAILED_ROWS=()
+DECLINED_ROWS=()
 
 while IFS=',' read -r raw_appliance raw_switch raw_port || [[ -n "${raw_appliance:-}" ]]; do
     appliance="$(trim "${raw_appliance:-}")"
@@ -338,8 +399,13 @@ while IFS=',' read -r raw_appliance raw_switch raw_port || [[ -n "${raw_applianc
     fi
 
     TOTAL=$((TOTAL + 1))
-    if run_row "$appliance" "$switch" "$port"; then
+    row_status=0
+    run_row "$appliance" "$switch" "$port" || row_status=$?
+    if [[ $row_status -eq 0 ]]; then
         OK=$((OK + 1))
+    elif [[ $row_status -eq 2 ]]; then
+        DECLINED=$((DECLINED + 1))
+        DECLINED_ROWS+=("$appliance,$switch,$port")
     else
         FAILED=$((FAILED + 1))
         FAILED_ROWS+=("$appliance,$switch,$port")
@@ -347,7 +413,13 @@ while IFS=',' read -r raw_appliance raw_switch raw_port || [[ -n "${raw_applianc
 done < "$CSV_FILE"
 
 echo
-echo "=== summary: $OK/$TOTAL rows succeeded ==="
+echo "=== summary: $OK/$TOTAL rows succeeded ($DECLINED declined by user) ==="
+if [[ $DECLINED -gt 0 ]]; then
+    echo "Declined rows:"
+    for row in "${DECLINED_ROWS[@]}"; do
+        echo "  - $row"
+    done
+fi
 if [[ $FAILED -gt 0 ]]; then
     echo "Failed rows:"
     for row in "${FAILED_ROWS[@]}"; do

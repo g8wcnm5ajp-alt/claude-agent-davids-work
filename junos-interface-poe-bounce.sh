@@ -11,14 +11,20 @@
 # Requires: expect
 #
 # Usage:
-#   ./junos-interface-poe-bounce.sh -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
+#   ./junos-interface-poe-bounce.sh -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
 #
 # Password resolution, in order of preference: -p flag, then JUNOS_PASSWORD
 # env var, then an interactive prompt. Prefer the env var or the prompt over
 # -p where possible -- a password passed on the command line is visible to
 # anyone on the box running `ps`.
+#
+# -c: after logging in and checking current state, print exactly which
+# commands are about to be sent (or that nothing needs to change) and pause
+# for a y/N confirmation before actually applying anything.
 
 set -euo pipefail
+
+VERSION="1.1.1"
 
 SETTLE_SECS=9
 SSH_TIMEOUT=20
@@ -27,7 +33,7 @@ ACTION=""
 
 usage() {
     cat <<USAGE
-Usage: $0 -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>]
+Usage: $0 -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
 
   -u  Username to log into the switch with
   -H  Switch management IP or hostname
@@ -36,6 +42,7 @@ Usage: $0 -u <username> -H <switch-ip> -i <interface> -a enable|disable [-m both
   -m  What to apply it to: both (default), interface, or poe
   -w  Seconds to wait after a change before reporting final status (default: ${SETTLE_SECS})
   -p  Password (visible via \`ps\` to anyone on the box -- prefer \$JUNOS_PASSWORD or the prompt)
+  -c  Preview the exact commands to be run and pause for y/N confirmation before applying them
   -h  Show this help
 
 If the interface (or PoE) is already in the requested state, that part is
@@ -50,8 +57,9 @@ USERNAME=""
 SWITCH_IP=""
 INTERFACE=""
 PASSWORD_ARG=""
+CONFIRM=0
 
-while getopts "u:H:i:m:a:w:p:h" opt; do
+while getopts "u:H:i:m:a:w:p:ch" opt; do
     case "$opt" in
         u) USERNAME="$OPTARG" ;;
         H) SWITCH_IP="$OPTARG" ;;
@@ -60,6 +68,7 @@ while getopts "u:H:i:m:a:w:p:h" opt; do
         a) ACTION="$OPTARG" ;;
         w) SETTLE_SECS="$OPTARG" ;;
         p) PASSWORD_ARG="$OPTARG" ;;
+        c) CONFIRM=1 ;;
         h) usage ;;
         *) usage ;;
     esac
@@ -79,6 +88,8 @@ case "$ACTION" in
     enable|disable) ;;
     *) echo "Error: -a must be one of: enable, disable" >&2; usage ;;
 esac
+
+echo "junos-interface-poe-bounce.sh v${VERSION}"
 
 if ! command -v expect >/dev/null 2>&1; then
     echo "Error: this script requires 'expect' to be installed." >&2
@@ -100,18 +111,20 @@ export JUNOS_MODE="$MODE"
 export JUNOS_ACTION="$ACTION"
 export JUNOS_SETTLE="$SETTLE_SECS"
 export JUNOS_SSH_TIMEOUT="$SSH_TIMEOUT"
+export JUNOS_CONFIRM="$CONFIRM"
 
 expect -f - <<'EXPECT_SCRIPT'
     set timeout $env(JUNOS_SSH_TIMEOUT)
     log_user 1
 
-    set user   $env(JUNOS_USER)
-    set host   $env(JUNOS_HOST)
-    set iface  $env(JUNOS_IFACE)
-    set mode   $env(JUNOS_MODE)
-    set action $env(JUNOS_ACTION)
-    set settle $env(JUNOS_SETTLE)
-    set pass   $env(JUNOS_PASSWORD)
+    set user    $env(JUNOS_USER)
+    set host    $env(JUNOS_HOST)
+    set iface   $env(JUNOS_IFACE)
+    set mode    $env(JUNOS_MODE)
+    set action  $env(JUNOS_ACTION)
+    set settle  $env(JUNOS_SETTLE)
+    set pass    $env(JUNOS_PASSWORD)
+    set confirm $env(JUNOS_CONFIRM)
 
     set do_iface [expr {$mode eq "both" || $mode eq "interface"}]
     set do_poe   [expr {$mode eq "both" || $mode eq "poe"}]
@@ -189,6 +202,43 @@ expect -f - <<'EXPECT_SCRIPT'
             puts "PoE on $iface is already $desired -- skipping PoE action.\n"
         } else {
             set need_poe_change 1
+        }
+    }
+
+    # --- preview + confirm, if -c was given ---
+    if {$confirm} {
+        set verb [expr {$desired eq "disabled" ? "set" : "delete"}]
+        puts "\nThe following will be run on $host:"
+        if {!$need_iface_change && !$need_poe_change} {
+            puts "  (nothing -- $iface is already $desired)"
+        } else {
+            puts "  configure"
+            if {$need_iface_change} {
+                puts "  $verb interfaces $iface disable"
+            }
+            if {$need_poe_change} {
+                puts "  $verb poe interface $iface disable"
+            }
+            puts "  commit"
+        }
+        # expect's own script came in via a heredoc on stdin, so plain
+        # stdin is already exhausted at this point -- read the answer from
+        # the controlling terminal directly instead.
+        set answer ""
+        if {[catch {set tty [open "/dev/tty" "r+"]} err]} {
+            puts "Cannot prompt for confirmation (no controlling terminal: $err) -- aborting, no changes made."
+            set need_iface_change 0
+            set need_poe_change 0
+        } else {
+            puts -nonewline $tty "\nContinue? \[y/N\]: "
+            flush $tty
+            gets $tty answer
+            close $tty
+            if {![regexp -nocase {^y} $answer]} {
+                puts "Aborted by user -- no changes made."
+                set need_iface_change 0
+                set need_poe_change 0
+            }
         }
     }
 
