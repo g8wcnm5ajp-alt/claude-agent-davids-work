@@ -273,19 +273,46 @@ run_row() {
         set declined_by_user 0
         if {$confirm} {
             set verb [expr {$desired eq "disabled" ? "set" : "delete"}]
-            puts "\nThe following will be run on $host:"
+            set n 1
+            puts "\nFull command sequence for $appliance -> $host:"
+            puts "  $n. ssh root@$appliance -> ssh $switch_user@$host   (done -- logged in, $pw_sent password(s) sent)"
+            incr n
+            puts "  $n. set cli screen-length 0                        (done)"
+            incr n
+            if {$do_iface} {
+                puts "  $n. show interfaces $iface                      (done -- current state: $iface_state)"
+                incr n
+            }
+            if {$do_poe} {
+                puts "  $n. show poe interface $iface                   (done -- current state: $poe_state)"
+                incr n
+            }
             if {!$need_iface_change && !$need_poe_change} {
-                puts "  (nothing -- $iface is already $desired)"
+                puts "  $n. (nothing to change -- $iface already $desired)"
+                incr n
             } else {
-                puts "  configure"
+                puts "  $n. configure"
+                incr n
                 if {$need_iface_change} {
-                    puts "  $verb interfaces $iface disable"
+                    puts "  $n. $verb interfaces $iface disable"
+                    incr n
                 }
                 if {$need_poe_change} {
-                    puts "  $verb poe interface $iface disable"
+                    puts "  $n. $verb poe interface $iface disable"
+                    incr n
                 }
-                puts "  commit"
+                puts "  $n. commit"
+                incr n
+                puts "  $n. exit                                           (leave configuration mode)"
+                incr n
             }
+            puts "  $n. show interfaces $iface                        (final report)"
+            incr n
+            if {$do_poe} {
+                puts "  $n. show poe interface $iface                     (final report)"
+                incr n
+            }
+            puts "  $n. exit                                           (log out, unwinds both hops)"
             # expect's own script came in via a heredoc on stdin, so plain
             # stdin is already exhausted at this point -- read the answer
             # from the controlling terminal directly instead.

@@ -179,16 +179,31 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
         declined = False
         if confirm:
             verb = 'set' if desired == 'disabled' else 'delete'
-            print(f"\nThe following will be run on {switch}:")
+            steps = [f"ssh root@{appliance} -> ssh {switch_user}@{switch}   (done -- logged in, {pw_sent} password(s) sent)",
+                     "set cli screen-length 0                        (done)"]
+            if do_iface:
+                steps.append(f"show interfaces {port}                      (done -- current state: {iface_state})")
+            if do_poe:
+                steps.append(f"show poe interface {port}                   (done -- current state: {poe_state})")
             if not need_iface_change and not need_poe_change:
-                print(f"  (nothing -- {port} is already {desired})")
+                steps.append(f"(nothing to change -- {port} already {desired})")
             else:
-                print("  configure")
+                steps.append("configure")
                 if need_iface_change:
-                    print(f"  {verb} interfaces {port} disable")
+                    steps.append(f"{verb} interfaces {port} disable")
                 if need_poe_change:
-                    print(f"  {verb} poe interface {port} disable")
-                print("  commit")
+                    steps.append(f"{verb} poe interface {port} disable")
+                steps.append("commit")
+                steps.append("exit                                           (leave configuration mode)")
+            steps.append(f"show interfaces {port}                        (final report)")
+            if do_poe:
+                steps.append(f"show poe interface {port}                     (final report)")
+            steps.append("exit                                           (log out, unwinds both hops)")
+
+            print(f"\nFull command sequence for {appliance} -> {switch}:")
+            for i, step in enumerate(steps, 1):
+                print(f"  {i}. {step}")
+
             answer = input(f"\nContinue with {switch} {port}? [y/N]: ")
             if not answer.strip().lower().startswith('y'):
                 print(f"Skipped by user -- no changes made for {switch} {port}.")
