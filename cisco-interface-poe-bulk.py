@@ -68,6 +68,7 @@ import pty
 import re
 import select
 import shutil
+import subprocess
 import sys
 import time
 
@@ -82,6 +83,24 @@ EXEC_PROMPT = re.compile(r'[^)]#\s*$')
 CFG_PROMPT = re.compile(r'\(config[^)]*\)#\s*$')
 PW_PROMPT = re.compile(r'[Pp]assword:')
 PERM_DENIED = re.compile(r'[Pp]ermission [Dd]enied|[Aa]uthentication [Ff]ailed|% ?[Ll]ogin invalid|% ?[Bb]ad (secrets|passwords)')
+
+
+def supports_required_rsa_size():
+    """Some Cisco switches (older IOS, e.g. Catalyst 3560) present a legacy
+    RSA host key under 1024 bits. Modern OpenSSH (8.5+) hard-rejects that
+    with "Bad server host key: Invalid key length" and there's no
+    negotiable workaround except RequiredRSASize -- which is itself only
+    understood by OpenSSH new enough to need it. Detect support with
+    `ssh -G` (a config dry-run, no network needed) rather than assuming,
+    since this script may run from appliances with a range of OpenSSH
+    versions and an unrecognized -o option is a hard failure, not a
+    no-op."""
+    try:
+        r = subprocess.run(['ssh', '-o', 'RequiredRSASize=512', '-G', 'localhost'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    except OSError:
+        return False
 
 
 def read_until(fd, patterns, timeout):
@@ -120,8 +139,9 @@ def run_switch_group(switch_user, password, appliance, switch, ports, mode, acti
     do_poe = mode in ('both', 'poe')
 
     ssh_opts = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
+    switch_ssh_opts = ssh_opts + (['-o', 'RequiredRSASize=512'] if supports_required_rsa_size() else [])
     cmd = ['ssh', '-tt', *ssh_opts, f'root@{appliance}',
-           'ssh', '-tt', *ssh_opts, f'{switch_user}@{switch}']
+           'ssh', '-tt', *switch_ssh_opts, f'{switch_user}@{switch}']
 
     print(f"\n=== {appliance} -> {switch} [{', '.join(ports)}] ===\n")
 

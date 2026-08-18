@@ -154,6 +154,21 @@ export CISCO_SETTLE="$SETTLE_SECS"
 export CISCO_SSH_TIMEOUT="$SSH_TIMEOUT"
 export CISCO_CONFIRM="$CONFIRM"
 
+# Some Cisco switches (older IOS, e.g. Catalyst 3560) present a legacy RSA
+# host key under 1024 bits. Modern OpenSSH (8.5+) hard-rejects that with
+# "Bad server host key: Invalid key length" and there's no negotiable
+# workaround except RequiredRSASize -- which is itself only understood by
+# OpenSSH new enough to need it. Detect support with `ssh -G` (a config
+# dry-run, no network needed) rather than assuming, since this script may
+# run from appliances with a range of OpenSSH versions and an unrecognized
+# -o option is a hard failure, not a no-op. Only ever applied to the
+# switch hop -- the appliance's own host key is normal-sized.
+CISCO_SWITCH_KEY_OPT=""
+if ssh -o RequiredRSASize=512 -G localhost >/dev/null 2>&1; then
+    CISCO_SWITCH_KEY_OPT="-o RequiredRSASize=512"
+fi
+export CISCO_SWITCH_KEY_OPT
+
 trim() {
     local s="$1"
     s="${s#"${s%%[![:space:]]*}"}"
@@ -184,6 +199,7 @@ run_switch_group() {
         set settle    $env(CISCO_SETTLE)
         set pass      $env(CISCO_PASSWORD)
         set confirm   $env(CISCO_CONFIRM)
+        set switch_key_opt $env(CISCO_SWITCH_KEY_OPT)
 
         set do_iface [expr {$mode eq "both" || $mode eq "interface"}]
         set do_poe   [expr {$mode eq "both" || $mode eq "poe"}]
@@ -196,8 +212,9 @@ run_switch_group() {
         puts "\n=== $appliance -> $host \[[join $ports {, }]\] ===\n"
 
         set ssh_opts {-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null}
+        set switch_ssh_opts [concat $ssh_opts [split $switch_key_opt]]
         # Appliance hop is always root, via the pre-shared key.
-        spawn ssh -tt {*}$ssh_opts root@$appliance ssh -tt {*}$ssh_opts $switch_user@$host
+        spawn ssh -tt {*}$ssh_opts root@$appliance ssh -tt {*}$switch_ssh_opts $switch_user@$host
 
         # Tolerant of 0, 1, or 2 password prompts on the way in -- same
         # rationale as the Junos bulk script's login loop.
