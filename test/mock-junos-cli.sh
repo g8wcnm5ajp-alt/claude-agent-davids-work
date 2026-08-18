@@ -108,6 +108,17 @@ while true; do
             echo "  Interface index: 128, SNMP ifIndex: 501"
             echo "  Link-level type: Ethernet, MTU: 1514, Speed: 1000mbps"
             ;;
+        "show log messages")
+            echo "Jan  1 00:00:01  mock-switch mgd[1234]: UI_CMDLINE_READ_LINE: User 'testuser', command 'show log messages'"
+            echo "Jan  1 00:00:00  mock-switch /kernel: fake log line 1"
+            echo "Jan  1 00:00:00  mock-switch /kernel: fake log line 2"
+            # Some real Junos platforms (dual-RE-style EX/QFX) print a
+            # routing-engine mastership indicator plus a blank line right
+            # before the next prompt -- reproduce that here so the
+            # pull-logs stripping logic gets regression coverage for it.
+            echo ""
+            echo "{master:0}"
+            ;;
         "show poe interface "*)
             iface="${cmd#show poe interface }"
             st="$(get_poe_state "$iface")"
