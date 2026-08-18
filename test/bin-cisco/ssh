@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#
+# Fake `ssh` for local Cisco-mock testing: put test/bin-cisco at the front
+# of PATH and it intercepts the `ssh user@host ...` call made by the Cisco
+# scripts, ignoring the connection args and dropping straight into the
+# mock Cisco CLI.
+
+exec "$(dirname "${BASH_SOURCE[0]}")/../mock-cisco-cli.sh"
