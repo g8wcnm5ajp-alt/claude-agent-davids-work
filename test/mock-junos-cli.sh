@@ -2,21 +2,47 @@
 #
 # mock-junos-cli.sh
 #
-# Fake interactive Junos CLI for exercising junos-interface-poe-bounce.sh
-# without a real switch. Stateful: tracks the interface's and PoE's admin
-# state and reflects it in "show" output, so the script's skip-if-already-
-# in-desired-state logic can actually be exercised. Understands: configure,
-# set/delete interfaces <if> disable, set/delete poe interface <if> disable,
-# commit, show interfaces <if>, show poe interface <if>, exit.
+# Fake interactive Junos CLI for exercising junos-interface-poe-bounce.sh /
+# junos-interface-poe-bulk.sh without a real switch. Stateful per-port:
+# tracks each interface's and its PoE's admin state independently and
+# reflects it in "show" output, so the skip-if-already-in-desired-state
+# logic -- including the multi-port-per-switch grouped-commit behavior --
+# can actually be exercised. Understands: configure, set/delete interfaces
+# <if> disable, set/delete poe interface <if> disable, commit,
+# show interfaces <if>, show poe interface <if>, exit.
 #
-# Initial states are configurable via env vars (default: both enabled):
-#   MOCK_IFACE_STATE=Enabled|Disabled
-#   MOCK_POE_STATE=Enabled|Disabled
+# Initial states, per port, default to Enabled unless overridden:
+#   MOCK_IFACE_STATE=Enabled|Disabled          -- default for any port not in MOCK_IFACE_STATES
+#   MOCK_POE_STATE=Enabled|Disabled            -- default for any port not in MOCK_POE_STATES
+#   MOCK_IFACE_STATES="port1=Enabled,port2=Disabled"  -- per-port overrides
+#   MOCK_POE_STATES="port1=Enabled,port2=Disabled"    -- per-port overrides
 
 PROMPT_USER="testuser@mock-switch"
 
-iface_state="${MOCK_IFACE_STATE:-Enabled}"
-poe_state="${MOCK_POE_STATE:-Enabled}"
+declare -A IFACE_STATES
+declare -A POE_STATES
+DEFAULT_IFACE_STATE="${MOCK_IFACE_STATE:-Enabled}"
+DEFAULT_POE_STATE="${MOCK_POE_STATE:-Enabled}"
+
+if [[ -n "${MOCK_IFACE_STATES:-}" ]]; then
+    IFS=',' read -ra _pairs <<< "$MOCK_IFACE_STATES"
+    for pair in "${_pairs[@]}"; do
+        IFACE_STATES["${pair%%=*}"]="${pair#*=}"
+    done
+fi
+if [[ -n "${MOCK_POE_STATES:-}" ]]; then
+    IFS=',' read -ra _pairs <<< "$MOCK_POE_STATES"
+    for pair in "${_pairs[@]}"; do
+        POE_STATES["${pair%%=*}"]="${pair#*=}"
+    done
+fi
+
+get_iface_state() {
+    echo "${IFACE_STATES[$1]:-$DEFAULT_IFACE_STATE}"
+}
+get_poe_state() {
+    echo "${POE_STATES[$1]:-$DEFAULT_POE_STATE}"
+}
 
 echo -n "Password: "
 read -r _
@@ -47,25 +73,34 @@ while true; do
             fi
             ;;
         "set interfaces "*" disable")
-            iface_state="Disabled"
+            port="${cmd#set interfaces }"
+            port="${port% disable}"
+            IFACE_STATES["$port"]="Disabled"
             ;;
         "delete interfaces "*" disable")
-            iface_state="Enabled"
+            port="${cmd#delete interfaces }"
+            port="${port% disable}"
+            IFACE_STATES["$port"]="Enabled"
             ;;
         "set poe interface "*" disable")
-            poe_state="Disabled"
+            port="${cmd#set poe interface }"
+            port="${port% disable}"
+            POE_STATES["$port"]="Disabled"
             ;;
         "delete poe interface "*" disable")
-            poe_state="Enabled"
+            port="${cmd#delete poe interface }"
+            port="${port% disable}"
+            POE_STATES["$port"]="Enabled"
             ;;
         commit)
             echo "commit complete"
             ;;
         "show interfaces "*)
             iface="${cmd#show interfaces }"
+            st="$(get_iface_state "$iface")"
             # Real Junos reports a disabled interface as "Administratively
             # down", not "Disabled" -- match that wording here.
-            if [[ "$iface_state" == "Disabled" ]]; then
+            if [[ "$st" == "Disabled" ]]; then
                 echo "Physical interface: ${iface}, Administratively down, Physical link is Down"
             else
                 echo "Physical interface: ${iface}, Enabled, Physical link is Up"
@@ -75,11 +110,12 @@ while true; do
             ;;
         "show poe interface "*)
             iface="${cmd#show poe interface }"
+            st="$(get_poe_state "$iface")"
             oper="ON"
-            [[ "$poe_state" == "Disabled" ]] && oper="OFF"
+            [[ "$st" == "Disabled" ]] && oper="OFF"
             echo "PoE interface status:"
             echo "    Interface name:                  ${iface}"
-            echo "    Interface administrative status: ${poe_state}"
+            echo "    Interface administrative status: ${st}"
             echo "    Interface operational status:    ${oper}"
             ;;
         "")

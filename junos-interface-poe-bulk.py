@@ -11,9 +11,14 @@
 #
 #   appliance_ip,switch_ip,switch_port
 #
-# and for every row, SSHes to the appliance first, then hops from there to
-# the Juniper switch, applying the same idempotent enable/disable logic
-# (interface and/or PoE, skip-if-already-in-desired-state) as
+# Rows are grouped by switch IP first: every port listed for the same
+# switch is handled in a single login and, if anything on that switch
+# actually needs to change, a single commit covering all of them -- not
+# one connection and one commit per port. A switch where every listed
+# port is already in the desired state gets no commit at all. For each
+# switch group, SSHes to the appliance first, then hops from there to the
+# Juniper switch, applying the same idempotent enable/disable logic
+# (interface and/or PoE, skip-if-already-in-desired-state per port) as
 # junos-interface-poe-bounce.sh / junos-interface-poe-bulk.sh.
 #
 # The appliance hop is always root@<appliance-ip>, run from the root
@@ -28,20 +33,24 @@
 # Usage:
 #   ./junos-interface-poe-bulk.py -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
 #
-# -c: for each row, after logging in and checking current state, print
-# exactly which commands are about to be sent (or that nothing needs to
-# change) and pause for a y/N confirmation before applying them. A "no"
-# skips that row's changes but continues the batch -- it's tracked
-# separately from real failures in the summary.
+# -c: for each switch group, after logging in and checking current state
+# for every port on it, print exactly which commands are about to be sent
+# (or that nothing needs to change) and pause for one y/N confirmation
+# covering the whole switch before applying them. A "no" skips that
+# switch's changes but continues the batch -- it's tracked separately from
+# real failures in the summary (applied to every port on that switch).
 #
 # CSV format: one row per line, no header, e.g.:
 #   192.168.1.10,192.168.22.223,ge-0/0/11
+#   192.168.1.10,192.168.22.223,ge-0/0/12
 #   192.168.1.11,192.168.22.224,ge-0/0/5
-# Blank lines and lines starting with # are skipped.
+# Blank lines and lines starting with # are skipped. If the same switch IP
+# appears with a different appliance IP on a later row, the first
+# appliance seen for that switch wins and a warning is printed.
 #
-# One row failing (bad login, unreachable host, etc.) does not stop the
-# rest of the batch -- failures are collected and reported in a summary at
-# the end, and the script exits non-zero if any row failed.
+# One switch group failing (bad login, unreachable host, etc.) does not
+# stop the rest of the batch -- failures are collected and reported in a
+# summary at the end, and the script exits non-zero if any group failed.
 #
 # Password resolution order: -p flag, then JUNOS_PASSWORD env var, then an
 # interactive prompt. Prefer the env var or the prompt over -p where
@@ -59,7 +68,7 @@ import shutil
 import sys
 import time
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 SETTLE_SECS_DEFAULT = 9
 SSH_TIMEOUT = 20
@@ -97,7 +106,15 @@ def send(fd, s):
     os.write(fd, s.encode())
 
 
-def run_row(switch_user, password, appliance, switch, port, mode, action, settle, confirm):
+def run_switch_group(switch_user, password, appliance, switch, ports, mode, action, settle, confirm):
+    """Handle every port on one switch in a single login + (at most) one
+    commit. Returns a single group-level status -- 'ok', 'declined', or
+    'failed' -- applied to all ports in the group in the caller's summary,
+    rather than tracking each port independently: a login failure obviously
+    affects every port on that switch equally, and a single combined -c
+    confirmation covers every pending change for the switch at once, so
+    per-port granularity beyond that wouldn't reflect anything the batch
+    actually did differently port-by-port."""
     desired = 'enabled' if action == 'enable' else 'disabled'
     do_iface = mode in ('both', 'interface')
     do_poe = mode in ('both', 'poe')
@@ -110,7 +127,7 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
     cmd = ['ssh', '-tt', *ssh_opts, f'root@{appliance}',
            'ssh', '-tt', *ssh_opts, f'{switch_user}@{switch}']
 
-    print(f"\n=== {appliance} -> {switch} {port} ===\n")
+    print(f"\n=== {appliance} -> {switch} [{', '.join(ports)}] ===\n")
 
     pid, fd = pty.fork()
     if pid == 0:
@@ -144,38 +161,45 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
         send(fd, 'set cli screen-length 0\r')
         read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
 
-        need_iface_change = False
-        need_poe_change = False
+        # --- check current state of every port up front ---
+        port_state = {}   # port -> {'iface_state', 'poe_state', 'need_iface', 'need_poe'}
+        any_change = False
+        for port in ports:
+            info = {'need_iface': False, 'need_poe': False}
+            if do_iface:
+                send(fd, f'show interfaces {port}\r')
+                _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
+                # Real Junos reports a disabled interface as "Administratively
+                # down", not "Disabled" -- only enabled interfaces say "Enabled".
+                if re.search(r'Administratively down', buf, re.I):
+                    iface_state = 'disabled'
+                elif re.search(r'Physical interface: [^,]+, Enabled', buf, re.I):
+                    iface_state = 'enabled'
+                else:
+                    iface_state = 'unknown'
+                info['iface_state'] = iface_state
+                print(f"[{port}] Current interface state: {iface_state}")
+                if iface_state == desired:
+                    print(f"[{port}] Interface is already {desired} -- skipping interface action.")
+                else:
+                    info['need_iface'] = True
+                    any_change = True
+            if do_poe:
+                send(fd, f'show poe interface {port}\r')
+                _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
+                m = re.search(r'administrative status:\s*(Enabled|Disabled)', buf, re.I)
+                poe_state = m.group(1).lower() if m else 'unknown'
+                info['poe_state'] = poe_state
+                print(f"[{port}] Current PoE state: {poe_state}")
+                if poe_state == desired:
+                    print(f"[{port}] PoE is already {desired} -- skipping PoE action.")
+                else:
+                    info['need_poe'] = True
+                    any_change = True
+            port_state[port] = info
 
-        if do_iface:
-            send(fd, f'show interfaces {port}\r')
-            _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
-            # Real Junos reports a disabled interface as "Administratively
-            # down", not "Disabled" -- only enabled interfaces say "Enabled".
-            if re.search(r'Administratively down', buf, re.I):
-                iface_state = 'disabled'
-            elif re.search(r'Physical interface: [^,]+, Enabled', buf, re.I):
-                iface_state = 'enabled'
-            else:
-                iface_state = 'unknown'
-            print(f"Current interface state: {iface_state}")
-            if iface_state == desired:
-                print(f"Interface {port} is already {desired} -- skipping interface action.")
-            else:
-                need_iface_change = True
-
-        if do_poe:
-            send(fd, f'show poe interface {port}\r')
-            _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
-            m = re.search(r'administrative status:\s*(Enabled|Disabled)', buf, re.I)
-            poe_state = m.group(1).lower() if m else 'unknown'
-            print(f"Current PoE state: {poe_state}")
-            if poe_state == desired:
-                print(f"PoE on {port} is already {desired} -- skipping PoE action.")
-            else:
-                need_poe_change = True
-
-        # Preview + confirm, if -c was given.
+        # Preview + confirm, if -c was given -- one combined plan covering
+        # every port on this switch, not one prompt per port.
         declined = False
         if confirm:
             verb = 'set' if desired == 'disabled' else 'delete'
@@ -192,62 +216,64 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
 
             step(f"ssh root@{appliance} -> ssh {switch_user}@{switch}   (done -- logged in, {pw_sent} password(s) sent)")
             step("set cli screen-length 0                        (done)")
-            if do_iface:
-                step(f"show interfaces {port}                      (done -- current state: {iface_state})")
-            if do_poe:
-                step(f"show poe interface {port}                   (done -- current state: {poe_state})")
-
-            if not need_iface_change and not need_poe_change:
-                step(f"(nothing to change -- {port} already {desired})")
+            for port in ports:
+                info = port_state[port]
                 if do_iface:
-                    note(f"would have run: {verb} interfaces {port} disable")
+                    step(f"show interfaces {port}                      (done -- current state: {info['iface_state']})")
                 if do_poe:
-                    note(f"would have run: {verb} poe interface {port} disable")
+                    step(f"show poe interface {port}                   (done -- current state: {info['poe_state']})")
+
+            if not any_change:
+                step(f"(nothing to change -- all ports already {desired})")
+                for port in ports:
+                    if do_iface:
+                        note(f"would have run: {verb} interfaces {port} disable")
+                    if do_poe:
+                        note(f"would have run: {verb} poe interface {port} disable")
                 if do_iface or do_poe:
                     note("                 commit")
             else:
                 step("configure")
-                if need_iface_change:
-                    step(f"{verb} interfaces {port} disable")
-                elif do_iface:
-                    note(f"(interface already {desired} -- would have run: {verb} interfaces {port} disable)")
-                if need_poe_change:
-                    step(f"{verb} poe interface {port} disable")
-                elif do_poe:
-                    note(f"(PoE already {desired} -- would have run: {verb} poe interface {port} disable)")
-                step("commit")
+                for port in ports:
+                    info = port_state[port]
+                    if info['need_iface']:
+                        step(f"{verb} interfaces {port} disable")
+                    elif do_iface:
+                        note(f"(interface {port} already {desired} -- would have run: {verb} interfaces {port} disable)")
+                    if info['need_poe']:
+                        step(f"{verb} poe interface {port} disable")
+                    elif do_poe:
+                        note(f"(PoE {port} already {desired} -- would have run: {verb} poe interface {port} disable)")
+                step("commit                                          (one commit for all ports on this switch)")
                 step("exit                                           (leave configuration mode)")
 
-            step(f"show interfaces {port}                        (final report)")
-            if do_poe:
-                step(f"show poe interface {port}                     (final report)")
+            for port in ports:
+                step(f"show interfaces {port}                        (final report)")
+                if do_poe:
+                    step(f"show poe interface {port}                     (final report)")
             step("exit                                           (log out, unwinds both hops)")
 
-            answer = input(f"\nContinue with {switch} {port}? [y/N]: ")
+            answer = input(f"\nContinue with {switch} [{', '.join(ports)}]? [y/N]: ")
             if not answer.strip().lower().startswith('y'):
-                print(f"Skipped by user -- no changes made for {switch} {port}.")
-                need_iface_change = False
-                need_poe_change = False
+                print(f"Skipped by user -- no changes made on {switch}.")
+                any_change = False
                 declined = True
 
-        # Apply whatever changes are actually needed, in one commit.
-        if need_iface_change or need_poe_change:
+        # Apply every port's pending change, in exactly one commit for the
+        # whole switch -- not one commit per port.
+        if any_change:
             send(fd, 'configure\r')
             read_until(fd, {'cfg': CFG_PROMPT}, SSH_TIMEOUT)
 
-            if need_iface_change:
-                if desired == 'disabled':
-                    send(fd, f'set interfaces {port} disable\r')
-                else:
-                    send(fd, f'delete interfaces {port} disable\r')
-                read_until(fd, {'cfg': CFG_PROMPT}, SSH_TIMEOUT)
-
-            if need_poe_change:
-                if desired == 'disabled':
-                    send(fd, f'set poe interface {port} disable\r')
-                else:
-                    send(fd, f'delete poe interface {port} disable\r')
-                read_until(fd, {'cfg': CFG_PROMPT}, SSH_TIMEOUT)
+            for port in ports:
+                info = port_state[port]
+                verb = 'set' if desired == 'disabled' else 'delete'
+                if info['need_iface']:
+                    send(fd, f'{verb} interfaces {port} disable\r')
+                    read_until(fd, {'cfg': CFG_PROMPT}, SSH_TIMEOUT)
+                if info['need_poe']:
+                    send(fd, f'{verb} poe interface {port} disable\r')
+                    read_until(fd, {'cfg': CFG_PROMPT}, SSH_TIMEOUT)
 
             send(fd, 'commit\r')
             read_until(fd, {'cfg': CFG_PROMPT}, SSH_TIMEOUT)
@@ -257,19 +283,21 @@ def run_row(switch_user, password, appliance, switch, port, mode, action, settle
             print(f"Waiting {settle}s for the change to take effect...")
             time.sleep(settle)
 
-        # Always report final status (physical link only, not the full dump).
-        print(f"\n--- current state of {port} on {switch} ---\n")
+        # Always report final status for every port (physical link only,
+        # not the full dump).
+        for port in ports:
+            print(f"\n--- current state of {port} on {switch} ---\n")
 
-        send(fd, f'show interfaces {port}\r')
-        _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
-        m = re.search(r'Physical link is (Up|Down)', buf, re.I)
-        print(f"Physical link: {m.group(1) if m else 'unknown'}")
-
-        if do_poe:
-            send(fd, f'show poe interface {port}\r')
+            send(fd, f'show interfaces {port}\r')
             _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
-            m = re.search(r'operational status:\s*(ON|OFF)', buf, re.I)
-            print(f"PoE operational status: {m.group(1) if m else 'unknown'}")
+            m = re.search(r'Physical link is (Up|Down)', buf, re.I)
+            print(f"Physical link: {m.group(1) if m else 'unknown'}")
+
+            if do_poe:
+                send(fd, f'show poe interface {port}\r')
+                _, buf = read_until(fd, {'op': OP_PROMPT}, SSH_TIMEOUT)
+                m = re.search(r'operational status:\s*(ON|OFF)', buf, re.I)
+                print(f"PoE operational status: {m.group(1) if m else 'unknown'}")
 
         send(fd, 'exit\r')
         read_until(fd, {}, 8)  # brief drain while the double-hop unwinds
@@ -309,7 +337,7 @@ def main():
     parser.add_argument('-p', dest='password', default=None,
                          help="Password (visible via `ps` to anyone on the box -- prefer $JUNOS_PASSWORD or the prompt)")
     parser.add_argument('-c', dest='confirm', action='store_true',
-                         help='Preview the exact commands to be run per row and pause for y/N confirmation before applying them')
+                         help='Preview the exact commands to be run per switch and pause for y/N confirmation before applying them')
     args = parser.parse_args()
 
     print(f"junos-interface-poe-bulk.py v{VERSION}")
@@ -326,12 +354,14 @@ def main():
     if not password:
         password = getpass.getpass(f"Password for {args.switch_user}@switch: ")
 
+    # Group rows by switch IP, preserving first-seen order, so every port on
+    # the same switch is handled in one login and (at most) one commit
+    # instead of reconnecting and committing per port.
+    groups = []          # [(appliance, switch, [ports])]
+    group_index = {}     # switch -> index into groups
     total = 0
-    ok = 0
     failed = 0
-    declined = 0
     failed_rows = []
-    declined_rows = []
 
     with open(args.csv_file) as f:
         for raw in f:
@@ -348,16 +378,32 @@ def main():
 
             appliance, switch, port = parts
             total += 1
-            status = run_row(args.switch_user, password, appliance, switch, port,
-                              args.mode, args.action, args.settle, args.confirm)
-            if status == 'ok':
-                ok += 1
-            elif status == 'declined':
-                declined += 1
-                declined_rows.append(f"{appliance},{switch},{port}")
+            if switch in group_index:
+                idx = group_index[switch]
+                g_appliance, g_switch, g_ports = groups[idx]
+                if g_appliance != appliance:
+                    print(f"Warning: switch {switch} listed with different appliances "
+                          f"({g_appliance} vs {appliance}) -- using {g_appliance}", file=sys.stderr)
+                g_ports.append(port)
             else:
-                failed += 1
-                failed_rows.append(f"{appliance},{switch},{port}")
+                group_index[switch] = len(groups)
+                groups.append((appliance, switch, [port]))
+
+    ok = 0
+    declined = 0
+    declined_rows = []
+
+    for appliance, switch, ports in groups:
+        status = run_switch_group(args.switch_user, password, appliance, switch, ports,
+                                   args.mode, args.action, args.settle, args.confirm)
+        if status == 'ok':
+            ok += len(ports)
+        elif status == 'declined':
+            declined += len(ports)
+            declined_rows.append(f"{appliance},{switch},[{', '.join(ports)}]")
+        else:
+            failed += len(ports)
+            failed_rows.append(f"{appliance},{switch},[{', '.join(ports)}]")
 
     print(f"\n=== summary: {ok}/{total} rows succeeded ({declined} declined by user) ===")
     if declined_rows:

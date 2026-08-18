@@ -22,6 +22,16 @@ whatever's actually wrong, always report final state.
 same CLI shape, same behavior, verified against the same real infrastructure.
 Keep them in sync when either changes.
 
+Both bulk tools group CSV rows by switch IP first: every port listed for
+the same switch is handled in a single login and, if anything on that
+switch actually needs to change, a *single* commit covering every port
+that needs it -- not one connection and one commit per port. A switch
+where every listed port is already in the desired state gets no commit
+at all. If the same switch IP appears with a different appliance IP on a
+later row, the first appliance seen for that switch wins (with a
+warning) -- the CSV should be consistent about which appliance reaches
+which switch.
+
 **Never try to install `expect` (or anything else) to make the `.sh`
 versions work on a restricted host.** Use `bulk.py` there instead. A prior
 attempt to install `expect` via yum on the EM triggered a VM rollback —
@@ -49,7 +59,7 @@ overwrite it, diff first if something looks off.
 - `-a enable|disable` — required, desired state
 - `-m both|interface|poe` — default `both`
 - `-w <seconds>` — settle delay before the final status check (default 9; bumped up from 3→5→9 after live testing showed shorter waits weren't reliably enough for the physical link to renegotiate)
-- `-c` — preview mode: print the *entire* command sequence (login, `set cli screen-length 0`, the `show` state-checks with their real results, the `configure`/`set-or-delete`/`commit`/`exit` block — or, if nothing needs to change, what it *would* have run — then the final report commands), and pause for a y/N confirm before anything that writes to the switch runs. Nothing that modifies switch config happens before that confirm; the login and `show` commands are read-only and unavoidable (the tool can't know whether to preview `set` or `delete` without checking real state first). In the bulk tools this is per-row; a decline skips just that row and is tracked separately from real failures in the summary.
+- `-c` — preview mode: print the *entire* command sequence (login, `set cli screen-length 0`, the `show` state-checks with their real results, the `configure`/`set-or-delete`/`commit`/`exit` block — or, if nothing needs to change, what it *would* have run — then the final report commands), and pause for a y/N confirm before anything that writes to the switch runs. Nothing that modifies switch config happens before that confirm; the login and `show` commands are read-only and unavoidable (the tool can't know whether to preview `set` or `delete` without checking real state first). In the bulk tools this is per-*switch-group* (covering every port on that switch in one combined plan and one prompt, matching the single-commit behavior), not per-row; a decline skips that whole switch's changes and is tracked separately from real failures in the summary, applied to every port in the group.
 - `-p <password>` — least-preferred password source (visible via `ps`); prefer `$JUNOS_PASSWORD` or the interactive prompt.
 
 ## Known real-device gotchas already fixed in these scripts (don't re-break them)
@@ -61,9 +71,10 @@ overwrite it, diff first if something looks off.
 
 ## Testing safely
 
-- `ge-0/0/11` on the reference test switch (`192.168.22.223`) is admin-up but link-down (nothing physically connected) — safe to bounce for real without affecting live traffic. Always confirm current state with a read-only `show interfaces <port> terse` before and after a real test, and leave it back the way you found it.
+- `ge-0/0/11` on the reference test switch (`192.168.22.223`) is admin-up but link-down (nothing physically connected) — safe to bounce for real without affecting live traffic. `ge-0/0/0` was also link-down at first check but has since shown link-up (something got connected) -- **always verify with a read-only `show interfaces <port> terse` immediately before assuming a port is safe**, don't trust an old note. Confirm state before and after any real test either way, and leave it back the way you found it.
 - To exercise the skip-vs-act decision logic without expect, `test/double_hop_probe.py` is a minimal python3-stdlib probe of just the double-hop + one interface check — useful on hosts without `expect` for confirming the mechanism works before trusting `bulk.py` fully.
-- `test/run-mock-test.sh` + `test/mock-junos-cli.sh` give a full mock Junos CLI (stateful: tracks admin state, supports `show poe interface`) for exercising `bounce.sh`/`bulk.sh` without touching real hardware at all — the mock's wording (e.g. "Administratively down") is kept in sync with what real Junos actually says, specifically so this class of bug can't regress silently again.
+- `test/run-mock-test.sh` + `test/mock-junos-cli.sh` give a full mock Junos CLI (stateful *per port*: tracks each interface's/PoE's admin state independently via `MOCK_IFACE_STATES`/`MOCK_POE_STATES`, supports `show poe interface`) for exercising `bounce.sh` without touching real hardware at all — the mock's wording (e.g. "Administratively down") is kept in sync with what real Junos actually says, specifically so this class of bug can't regress silently again.
+- `test/run-mock-bulk-test.sh` exercises `bulk.sh`'s multi-port-per-switch grouping specifically: one login, at most one commit, only the ports that actually need it included. Mirror any grouping-logic change here in `bulk.py` too and re-verify against real hardware, since the mock only proves the command sequencing, not the double-hop itself.
 
 ## Deployment locations
 

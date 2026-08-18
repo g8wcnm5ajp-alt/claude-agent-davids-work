@@ -11,9 +11,14 @@
 #
 #   appliance_ip,switch_ip,switch_port
 #
-# and for every row, SSHes to the appliance first, then hops from there to
-# the Juniper switch, applying the same idempotent enable/disable logic
-# (interface and/or PoE, skip-if-already-in-desired-state) as the
+# Rows are grouped by switch IP first: every port listed for the same
+# switch is handled in a single login and, if anything on that switch
+# actually needs to change, a single commit covering all of them -- not
+# one connection and one commit per port. A switch where every listed
+# port is already in the desired state gets no commit at all. For each
+# switch group, SSHes to the appliance first, then hops from there to the
+# Juniper switch, applying the same idempotent enable/disable logic
+# (interface and/or PoE, skip-if-already-in-desired-state per port) as the
 # single-target script. Switch username, password, mode, action, and settle
 # delay are the same for every row and are given on the command line --
 # only the appliance IP, switch IP, and port vary per row.
@@ -30,20 +35,24 @@
 # Usage:
 #   ./junos-interface-poe-bulk.sh -s <switch-username> -f <csv-file> -a enable|disable [-m both|interface|poe] [-w <settle-seconds>] [-p <password>] [-c]
 #
-# -c: for each row, after logging in and checking current state, print
-# exactly which commands are about to be sent (or that nothing needs to
-# change) and pause for a y/N confirmation before applying them. A "no"
-# skips that row's changes but continues the batch -- it's tracked
-# separately from real failures in the summary.
+# -c: for each switch group, after logging in and checking current state
+# for every port on it, print exactly which commands are about to be sent
+# (or that nothing needs to change) and pause for one y/N confirmation
+# covering the whole switch before applying them. A "no" skips that
+# switch's changes but continues the batch -- it's tracked separately from
+# real failures in the summary (applied to every port on that switch).
 #
 # CSV format: one row per line, no header, e.g.:
 #   192.168.1.10,192.168.22.223,ge-0/0/11
+#   192.168.1.10,192.168.22.223,ge-0/0/12
 #   192.168.1.11,192.168.22.224,ge-0/0/5
-# Blank lines and lines starting with # are skipped.
+# Blank lines and lines starting with # are skipped. If the same switch IP
+# appears with a different appliance IP on a later row, the first
+# appliance seen for that switch wins and a warning is printed.
 #
-# One row failing (bad login, unreachable host, etc.) does not stop the
-# rest of the batch -- failures are collected and reported in a summary at
-# the end, and the script exits non-zero if any row failed.
+# One switch group failing (bad login, unreachable host, etc.) does not
+# stop the rest of the batch -- failures are collected and reported in a
+# summary at the end, and the script exits non-zero if any group failed.
 #
 # Password resolution order: -p flag, then JUNOS_PASSWORD env var, then an
 # interactive prompt. Prefer the env var or the prompt over -p where
@@ -53,7 +62,7 @@
 
 set -uo pipefail   # no -e: one row failing must not abort the batch
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 SETTLE_SECS=9
 SSH_TIMEOUT=20
@@ -71,7 +80,7 @@ Usage: $0 -s <switch-username> -f <csv-file> -a enable|disable [-m both|interfac
   -m  What to apply it to: both (default), interface, or poe
   -w  Seconds to wait after a change before reporting final status (default: ${SETTLE_SECS})
   -p  Password (visible via \`ps\` to anyone on the box -- prefer \$JUNOS_PASSWORD or the prompt)
-  -c  Preview the exact commands to be run per row and pause for y/N confirmation before applying them
+  -c  Preview the exact commands to be run per switch and pause for y/N confirmation before applying them
   -h  Show this help
 
 The appliance hop is always root@<appliance-ip> via pre-shared keys (no
@@ -147,11 +156,19 @@ trim() {
     printf '%s' "$s"
 }
 
-run_row() {
-    local appliance="$1" switch="$2" port="$3"
+# Handles every port on one switch in a single login and, at most, one
+# commit. A single group-level outcome (ok/declined/failed exit code) is
+# applied by the caller to every port in the group in the batch summary,
+# rather than tracking each port independently -- a login failure affects
+# every port on that switch equally, and a single combined -c confirmation
+# covers every pending change for the switch at once, so per-port
+# granularity beyond that wouldn't reflect anything the batch actually did
+# differently port-by-port.
+run_switch_group() {
+    local appliance="$1" switch="$2" ports_csv="$3"
     export JUNOS_APPLIANCE="$appliance"
     export JUNOS_HOST="$switch"
-    export JUNOS_IFACE="$port"
+    export JUNOS_PORTS="$ports_csv"
 
     expect -f - <<'EXPECT_SCRIPT'
         set timeout $env(JUNOS_SSH_TIMEOUT)
@@ -160,7 +177,7 @@ run_row() {
         set switch_user $env(JUNOS_SWITCH_USER)
         set appliance $env(JUNOS_APPLIANCE)
         set host      $env(JUNOS_HOST)
-        set iface     $env(JUNOS_IFACE)
+        set ports     [split $env(JUNOS_PORTS) ","]
         set mode      $env(JUNOS_MODE)
         set action    $env(JUNOS_ACTION)
         set settle    $env(JUNOS_SETTLE)
@@ -170,12 +187,13 @@ run_row() {
         set do_iface [expr {$mode eq "both" || $mode eq "interface"}]
         set do_poe   [expr {$mode eq "both" || $mode eq "poe"}]
         set desired  [expr {$action eq "enable" ? "enabled" : "disabled"}]
+        set verb     [expr {$desired eq "disabled" ? "set" : "delete"}]
 
         # Operational-mode and configuration-mode prompts both end in these chars
         set op_prompt  {[%>] $}
         set cfg_prompt {[%#] $}
 
-        puts "\n=== $appliance -> $host $iface ===\n"
+        puts "\n=== $appliance -> $host \[[join $ports {, }]\] ===\n"
 
         # Hop 1: ssh to the appliance, whose remote command is itself an ssh
         # to the switch. This avoids ever needing to match the appliance's
@@ -224,77 +242,92 @@ run_row() {
         send -- "set cli screen-length 0\r"
         expect -re $op_prompt
 
-        set need_iface_change 0
-        set need_poe_change 0
+        # --- check current state of every port up front ---
+        array set need_iface_map {}
+        array set need_poe_map {}
+        array set iface_state_map {}
+        array set poe_state_map {}
+        set any_change 0
 
-        # --- check current interface state ---
-        if {$do_iface} {
-            log_user 0
-            send -- "show interfaces $iface\r"
-            expect -re $op_prompt
-            log_user 1
-            # Real Junos reports a disabled interface as "Administratively
-            # down", not "Disabled" -- only enabled interfaces say "Enabled".
-            if {[regexp -nocase {Administratively down} $expect_out(buffer)]} {
-                set iface_state "disabled"
-            } elseif {[regexp -nocase {Physical interface: [^,]+, Enabled} $expect_out(buffer)]} {
-                set iface_state "enabled"
-            } else {
-                set iface_state "unknown"
+        foreach port $ports {
+            set need_iface_map($port) 0
+            set need_poe_map($port) 0
+
+            if {$do_iface} {
+                log_user 0
+                send -- "show interfaces $port\r"
+                expect -re $op_prompt
+                log_user 1
+                # Real Junos reports a disabled interface as "Administratively
+                # down", not "Disabled" -- only enabled interfaces say "Enabled".
+                if {[regexp -nocase {Administratively down} $expect_out(buffer)]} {
+                    set st "disabled"
+                } elseif {[regexp -nocase {Physical interface: [^,]+, Enabled} $expect_out(buffer)]} {
+                    set st "enabled"
+                } else {
+                    set st "unknown"
+                }
+                set iface_state_map($port) $st
+                puts "\n\[$port\] Current interface state: $st\n"
+                if {$st eq $desired} {
+                    puts "\[$port\] Interface is already $desired -- skipping interface action.\n"
+                } else {
+                    set need_iface_map($port) 1
+                    set any_change 1
+                }
             }
-            puts "\nCurrent interface state: $iface_state\n"
-            if {$iface_state eq $desired} {
-                puts "Interface $iface is already $desired -- skipping interface action.\n"
-            } else {
-                set need_iface_change 1
+
+            if {$do_poe} {
+                log_user 0
+                send -- "show poe interface $port\r"
+                expect -re $op_prompt
+                log_user 1
+                if {[regexp -nocase {administrative status:\s*(Enabled|Disabled)} $expect_out(buffer) -> m]} {
+                    set st [string tolower $m]
+                } else {
+                    set st "unknown"
+                }
+                set poe_state_map($port) $st
+                puts "\n\[$port\] Current PoE state: $st\n"
+                if {$st eq $desired} {
+                    puts "\[$port\] PoE is already $desired -- skipping PoE action.\n"
+                } else {
+                    set need_poe_map($port) 1
+                    set any_change 1
+                }
             }
         }
 
-        # --- check current PoE state ---
-        if {$do_poe} {
-            log_user 0
-            send -- "show poe interface $iface\r"
-            expect -re $op_prompt
-            log_user 1
-            if {[regexp -nocase {administrative status:\s*(Enabled|Disabled)} $expect_out(buffer) -> m]} {
-                set poe_state [string tolower $m]
-            } else {
-                set poe_state "unknown"
-            }
-            puts "\nCurrent PoE state: $poe_state\n"
-            if {$poe_state eq $desired} {
-                puts "PoE on $iface is already $desired -- skipping PoE action.\n"
-            } else {
-                set need_poe_change 1
-            }
-        }
-
-        # --- preview + confirm, if -c was given ---
+        # --- preview + confirm, if -c was given -- one combined plan for
+        # every port on this switch, not one prompt per port ---
         set declined_by_user 0
         if {$confirm} {
-            set verb [expr {$desired eq "disabled" ? "set" : "delete"}]
             set n 1
             puts "\nFull command sequence for $appliance -> $host:"
             puts "  $n. ssh root@$appliance -> ssh $switch_user@$host   (done -- logged in, $pw_sent password(s) sent)"
             incr n
             puts "  $n. set cli screen-length 0                        (done)"
             incr n
-            if {$do_iface} {
-                puts "  $n. show interfaces $iface                      (done -- current state: $iface_state)"
-                incr n
-            }
-            if {$do_poe} {
-                puts "  $n. show poe interface $iface                   (done -- current state: $poe_state)"
-                incr n
-            }
-            if {!$need_iface_change && !$need_poe_change} {
-                puts "  $n. (nothing to change -- $iface already $desired)"
-                incr n
+            foreach port $ports {
                 if {$do_iface} {
-                    puts "     would have run: $verb interfaces $iface disable"
+                    puts "  $n. show interfaces $port                      (done -- current state: $iface_state_map($port))"
+                    incr n
                 }
                 if {$do_poe} {
-                    puts "     would have run: $verb poe interface $iface disable"
+                    puts "  $n. show poe interface $port                   (done -- current state: $poe_state_map($port))"
+                    incr n
+                }
+            }
+            if {!$any_change} {
+                puts "  $n. (nothing to change -- all ports already $desired)"
+                incr n
+                foreach port $ports {
+                    if {$do_iface} {
+                        puts "     would have run: $verb interfaces $port disable"
+                    }
+                    if {$do_poe} {
+                        puts "     would have run: $verb poe interface $port disable"
+                    }
                 }
                 if {$do_iface || $do_poe} {
                     puts "                      commit"
@@ -302,28 +335,32 @@ run_row() {
             } else {
                 puts "  $n. configure"
                 incr n
-                if {$need_iface_change} {
-                    puts "  $n. $verb interfaces $iface disable"
-                    incr n
-                } elseif {$do_iface} {
-                    puts "     (interface already $desired -- would have run: $verb interfaces $iface disable)"
+                foreach port $ports {
+                    if {$need_iface_map($port)} {
+                        puts "  $n. $verb interfaces $port disable"
+                        incr n
+                    } elseif {$do_iface} {
+                        puts "     (interface $port already $desired -- would have run: $verb interfaces $port disable)"
+                    }
+                    if {$need_poe_map($port)} {
+                        puts "  $n. $verb poe interface $port disable"
+                        incr n
+                    } elseif {$do_poe} {
+                        puts "     (PoE $port already $desired -- would have run: $verb poe interface $port disable)"
+                    }
                 }
-                if {$need_poe_change} {
-                    puts "  $n. $verb poe interface $iface disable"
-                    incr n
-                } elseif {$do_poe} {
-                    puts "     (PoE already $desired -- would have run: $verb poe interface $iface disable)"
-                }
-                puts "  $n. commit"
+                puts "  $n. commit                                          (one commit for all ports on this switch)"
                 incr n
                 puts "  $n. exit                                           (leave configuration mode)"
                 incr n
             }
-            puts "  $n. show interfaces $iface                        (final report)"
-            incr n
-            if {$do_poe} {
-                puts "  $n. show poe interface $iface                     (final report)"
+            foreach port $ports {
+                puts "  $n. show interfaces $port                        (final report)"
                 incr n
+                if {$do_poe} {
+                    puts "  $n. show poe interface $port                     (final report)"
+                    incr n
+                }
             }
             puts "  $n. exit                                           (log out, unwinds both hops)"
             # expect's own script came in via a heredoc on stdin, so plain
@@ -331,45 +368,37 @@ run_row() {
             # from the controlling terminal directly instead.
             set answer ""
             if {[catch {set tty [open "/dev/tty" "r+"]} err]} {
-                puts "Cannot prompt for confirmation (no controlling terminal: $err) -- skipping this row, no changes made."
-                set need_iface_change 0
-                set need_poe_change 0
+                puts "Cannot prompt for confirmation (no controlling terminal: $err) -- skipping this switch, no changes made."
+                set any_change 0
                 set declined_by_user 1
             } else {
-                puts -nonewline $tty "\nContinue with $host $iface? \[y/N\]: "
+                puts -nonewline $tty "\nContinue with $host \[[join $ports {, }]\]? \[y/N\]: "
                 flush $tty
                 gets $tty answer
                 close $tty
                 if {![regexp -nocase {^y} $answer]} {
-                    puts "Skipped by user -- no changes made for $host $iface."
-                    set need_iface_change 0
-                    set need_poe_change 0
+                    puts "Skipped by user -- no changes made on $host."
+                    set any_change 0
                     set declined_by_user 1
                 }
             }
         }
 
-        # --- apply whatever changes are actually needed, in one commit ---
-        if {$need_iface_change || $need_poe_change} {
+        # --- apply every port's pending change, in exactly one commit for
+        # the whole switch -- not one commit per port ---
+        if {$any_change} {
             send -- "configure\r"
             expect -re $cfg_prompt
 
-            if {$need_iface_change} {
-                if {$desired eq "disabled"} {
-                    send -- "set interfaces $iface disable\r"
-                } else {
-                    send -- "delete interfaces $iface disable\r"
+            foreach port $ports {
+                if {$need_iface_map($port)} {
+                    send -- "$verb interfaces $port disable\r"
+                    expect -re $cfg_prompt
                 }
-                expect -re $cfg_prompt
-            }
-
-            if {$need_poe_change} {
-                if {$desired eq "disabled"} {
-                    send -- "set poe interface $iface disable\r"
-                } else {
-                    send -- "delete poe interface $iface disable\r"
+                if {$need_poe_map($port)} {
+                    send -- "$verb poe interface $port disable\r"
+                    expect -re $cfg_prompt
                 }
-                expect -re $cfg_prompt
             }
 
             send -- "commit\r"
@@ -382,28 +411,31 @@ run_row() {
             sleep $settle
         }
 
-        # --- always report final status (physical link only, not the full dump) ---
-        puts "\n--- current state of $iface on $host ---\n"
+        # --- always report final status for every port (physical link
+        # only, not the full dump) ---
+        foreach port $ports {
+            puts "\n--- current state of $port on $host ---\n"
 
-        log_user 0
-        send -- "show interfaces $iface\r"
-        expect -re $op_prompt
-        log_user 1
-        if {[regexp -nocase {Physical link is (Up|Down)} $expect_out(buffer) -> link]} {
-            puts "Physical link: $link"
-        } else {
-            puts "Physical link: unknown"
-        }
-
-        if {$do_poe} {
             log_user 0
-            send -- "show poe interface $iface\r"
+            send -- "show interfaces $port\r"
             expect -re $op_prompt
             log_user 1
-            if {[regexp -nocase {operational status:\s*(ON|OFF)} $expect_out(buffer) -> oper]} {
-                puts "PoE operational status: $oper"
+            if {[regexp -nocase {Physical link is (Up|Down)} $expect_out(buffer) -> link]} {
+                puts "Physical link: $link"
             } else {
-                puts "PoE operational status: unknown"
+                puts "Physical link: unknown"
+            }
+
+            if {$do_poe} {
+                log_user 0
+                send -- "show poe interface $port\r"
+                expect -re $op_prompt
+                log_user 1
+                if {[regexp -nocase {operational status:\s*(ON|OFF)} $expect_out(buffer) -> oper]} {
+                    puts "PoE operational status: $oper"
+                } else {
+                    puts "PoE operational status: unknown"
+                }
             }
         }
 
@@ -416,12 +448,28 @@ run_row() {
 EXPECT_SCRIPT
 }
 
+# Group rows by switch IP, preserving first-seen order, so every port on
+# the same switch is handled in one login and (at most) one commit instead
+# of reconnecting and committing per port. Parallel arrays keyed by the
+# same index since bash has no native nested data structures.
+GROUP_SWITCHES=()
+GROUP_APPLIANCES=()
+GROUP_PORTS=()
+
+find_group_index() {
+    local target="$1" i
+    for i in "${!GROUP_SWITCHES[@]}"; do
+        if [[ "${GROUP_SWITCHES[$i]}" == "$target" ]]; then
+            echo "$i"
+            return 0
+        fi
+    done
+    echo "-1"
+}
+
 TOTAL=0
-OK=0
 FAILED=0
-DECLINED=0
 FAILED_ROWS=()
-DECLINED_ROWS=()
 
 while IFS=',' read -r raw_appliance raw_switch raw_port || [[ -n "${raw_appliance:-}" ]]; do
     appliance="$(trim "${raw_appliance:-}")"
@@ -439,18 +487,41 @@ while IFS=',' read -r raw_appliance raw_switch raw_port || [[ -n "${raw_applianc
     fi
 
     TOTAL=$((TOTAL + 1))
-    row_status=0
-    run_row "$appliance" "$switch" "$port" || row_status=$?
-    if [[ $row_status -eq 0 ]]; then
-        OK=$((OK + 1))
-    elif [[ $row_status -eq 2 ]]; then
-        DECLINED=$((DECLINED + 1))
-        DECLINED_ROWS+=("$appliance,$switch,$port")
+    idx="$(find_group_index "$switch")"
+    if [[ "$idx" == "-1" ]]; then
+        GROUP_SWITCHES+=("$switch")
+        GROUP_APPLIANCES+=("$appliance")
+        GROUP_PORTS+=("$port")
     else
-        FAILED=$((FAILED + 1))
-        FAILED_ROWS+=("$appliance,$switch,$port")
+        if [[ "${GROUP_APPLIANCES[$idx]}" != "$appliance" ]]; then
+            echo "Warning: switch $switch listed with different appliances (${GROUP_APPLIANCES[$idx]} vs $appliance) -- using ${GROUP_APPLIANCES[$idx]}" >&2
+        fi
+        GROUP_PORTS[$idx]="${GROUP_PORTS[$idx]},${port}"
     fi
 done < "$CSV_FILE"
+
+OK=0
+DECLINED=0
+DECLINED_ROWS=()
+
+for i in "${!GROUP_SWITCHES[@]}"; do
+    switch="${GROUP_SWITCHES[$i]}"
+    appliance="${GROUP_APPLIANCES[$i]}"
+    ports_csv="${GROUP_PORTS[$i]}"
+    port_count=$(($(grep -o ',' <<<"$ports_csv" | wc -l) + 1))
+
+    group_status=0
+    run_switch_group "$appliance" "$switch" "$ports_csv" || group_status=$?
+    if [[ $group_status -eq 0 ]]; then
+        OK=$((OK + port_count))
+    elif [[ $group_status -eq 2 ]]; then
+        DECLINED=$((DECLINED + port_count))
+        DECLINED_ROWS+=("$appliance,$switch,[${ports_csv}]")
+    else
+        FAILED=$((FAILED + port_count))
+        FAILED_ROWS+=("$appliance,$switch,[${ports_csv}]")
+    fi
+done
 
 echo
 echo "=== summary: $OK/$TOTAL rows succeeded ($DECLINED declined by user) ==="
