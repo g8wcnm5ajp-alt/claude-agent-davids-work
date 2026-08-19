@@ -4,11 +4,17 @@
 #
 # Runs from the EM. Given a client IP, finds which appliance manages it
 # (via `fstool hostinfo`, run locally on the EM), then SSHes to that
-# appliance and queries its local Postgres database for that client's
-# history in either the `np_action` table (policy/NetTool actions like
-# sw_block, snow_add_new, goodies_label) or the `source_log` table
-# (per-property learn/update events) -- same script, same flags, just a
-# different table.
+# appliance to pull that client's history -- same script, same flags,
+# just a different -l value:
+#
+#   -l np_action    the `np_action` table (policy/NetTool actions like
+#                    sw_block, snow_add_new, goodies_label)
+#   -l source_log    the `source_log` table (per-property learn/update
+#                    events)
+#   -l hostinfo      `fstool hostinfo <client-ip>` run ON THE APPLIANCE
+#                    itself, rather than on the EM -- useful since
+#                    fstool's answer can differ depending on which box
+#                    it's asked from.
 #
 # The client IP is stored in these tables as a big-endian uint32 in the
 # `primary_id` column, not as text -- this script converts the given IP
@@ -38,12 +44,14 @@
 # returned immediately.
 #
 # Usage:
-#   ./client-activity-log.sh -i <client-ip> [-l np_action|source_log] [-s <start-time>] [-e <end-time>] [-o <output-file>] [-A <appliance-ip>]
+#   ./client-activity-log.sh -i <client-ip> [-l np_action|source_log|hostinfo] [-s <start-time>] [-e <end-time>] [-o <output-file>] [-A <appliance-ip>]
 #
 # -s / -e accept either a raw Unix epoch (seconds) or anything `date -d`
-# understands (e.g. "2026-08-14", "2026-08-14 09:00:00"). -A skips the
-# `fstool hostinfo` lookup and queries the given appliance directly, in
-# case the lookup's output format ever doesn't match what's parsed here.
+# understands (e.g. "2026-08-14", "2026-08-14 09:00:00"). They're ignored
+# (with a warning) for -l hostinfo, which has no time dimension. -A skips
+# the `fstool hostinfo` lookup used to find the managing appliance and
+# queries the given appliance directly, in case the lookup's output
+# format ever doesn't match what's parsed here.
 #
 # The appliance hop is always root@<appliance-ip>, key-based (no username
 # or password needed) -- same pre-shared-key model as the other tools in
@@ -62,14 +70,16 @@ APPLIANCE_ARG=""
 
 usage() {
     cat <<USAGE
-Usage: $0 -i <client-ip> [-l np_action|source_log] [-s <start-time>] [-e <end-time>] [-o <output-file>] [-A <appliance-ip>]
+Usage: $0 -i <client-ip> [-l np_action|source_log|hostinfo] [-s <start-time>] [-e <end-time>] [-o <output-file>] [-A <appliance-ip>]
 
   -i  Client IP address to look up
-  -l  Which table to query: np_action (default) or source_log
-  -s  Start of time range, UTC (raw epoch seconds, or anything \`date -d\` accepts)
-  -e  End of time range, UTC (same format as -s)
+  -l  What to run: np_action (default), source_log, or hostinfo
+      (np_action/source_log query that table; hostinfo runs
+      \`fstool hostinfo <client-ip>\` on the appliance itself)
+  -s  Start of time range, UTC (raw epoch seconds, or anything \`date -d\` accepts) -- ignored for -l hostinfo
+  -e  End of time range, UTC (same format as -s) -- ignored for -l hostinfo
   -o  File to save the results to (default: print to stdout)
-  -A  Appliance IP to query directly, skipping the \`fstool hostinfo\` lookup
+  -A  Appliance IP to query directly, skipping the \`fstool hostinfo\` lookup used to find the managing appliance
   -h  Show this help
 
 Run this on the EM -- it uses \`fstool hostinfo\` locally to find which
@@ -96,9 +106,13 @@ done
 [[ -z "$CLIENT_IP" ]] && { echo "Error: -i <client-ip> is required" >&2; usage; }
 
 case "$LOG_TABLE" in
-    np_action|source_log) ;;
-    *) echo "Error: -l must be one of: np_action, source_log" >&2; usage ;;
+    np_action|source_log|hostinfo) ;;
+    *) echo "Error: -l must be one of: np_action, source_log, hostinfo" >&2; usage ;;
 esac
+
+if [[ "$LOG_TABLE" == "hostinfo" && ( -n "$START_ARG" || -n "$END_ARG" ) ]]; then
+    echo "Warning: -s/-e are ignored for -l hostinfo (it has no time dimension)" >&2
+fi
 
 echo "client-activity-log.sh v${VERSION}"
 
@@ -184,29 +198,39 @@ if [[ -z "$APPLIANCE" ]]; then
 fi
 echo "Client $CLIENT_IP is managed by appliance $APPLIANCE"
 
-# --- build the query. Both tables get the same real_ip computed column
-# (Postgres bitwise arithmetic -- no int->inet cast works on this schema)
-# and a computed *_gmt column, so both log types are processed the same
-# way from here on, per the design note this was built from. ---
-REAL_IP_EXPR="((primary_id >> 24) & 255) || '.' || ((primary_id >> 16) & 255) || '.' || ((primary_id >> 8) & 255) || '.' || (primary_id & 255)"
-
-if [[ "$LOG_TABLE" == "np_action" ]]; then
-    SQL="SELECT ${REAL_IP_EXPR} AS real_ip, *, to_timestamp(time) AT TIME ZONE 'UTC' AS time_gmt, to_timestamp(clear_time) AT TIME ZONE 'UTC' AS clear_time_gmt FROM np_action WHERE primary_id=${INT_IP}"
+# --- build the remote command. np_action/source_log get the same real_ip
+# computed column (Postgres bitwise arithmetic -- no int->inet cast works
+# on this schema) and a computed *_gmt column, so both log types are
+# processed the same way from here on, per the design note this was built
+# from. hostinfo instead just runs `fstool hostinfo` on the appliance --
+# no SQL, no time filter, since it has no time dimension. ---
+if [[ "$LOG_TABLE" == "hostinfo" ]]; then
+    echo "Running fstool hostinfo on $APPLIANCE ..."
+    # Same re-parse rationale as the psql case below: the command crosses
+    # two shell parses (this shell -> the remote login shell), so it's
+    # built with printf %q rather than hand-quoted.
+    REMOTE_CMD=$(printf '%q ' fstool hostinfo "$CLIENT_IP")
 else
-    SQL="SELECT ${REAL_IP_EXPR} AS real_ip, *, to_timestamp(time/1000.0) AT TIME ZONE 'UTC' AS time_gmt FROM source_log WHERE primary_id=${INT_IP}"
+    REAL_IP_EXPR="((primary_id >> 24) & 255) || '.' || ((primary_id >> 16) & 255) || '.' || ((primary_id >> 8) & 255) || '.' || (primary_id & 255)"
+
+    if [[ "$LOG_TABLE" == "np_action" ]]; then
+        SQL="SELECT ${REAL_IP_EXPR} AS real_ip, *, to_timestamp(time) AT TIME ZONE 'UTC' AS time_gmt, to_timestamp(clear_time) AT TIME ZONE 'UTC' AS clear_time_gmt FROM np_action WHERE primary_id=${INT_IP}"
+    else
+        SQL="SELECT ${REAL_IP_EXPR} AS real_ip, *, to_timestamp(time/1000.0) AT TIME ZONE 'UTC' AS time_gmt FROM source_log WHERE primary_id=${INT_IP}"
+    fi
+
+    [[ -n "$START_EPOCH" ]] && SQL="${SQL} AND time>=$(( START_EPOCH * TIME_SCALE ))"
+    [[ -n "$END_EPOCH"   ]] && SQL="${SQL} AND time<$(( END_EPOCH * TIME_SCALE ))"
+    SQL="${SQL} ORDER BY time;"
+
+    echo "Querying $LOG_TABLE on $APPLIANCE ..."
+
+    # The SQL is passed through two shell parses (this shell -> the remote
+    # login shell ssh hands it to), so it's re-quoted with printf %q rather
+    # than embedded in a hand-built quoted string -- %q produces a form
+    # that round-trips correctly through exactly that kind of re-parse.
+    REMOTE_CMD=$(printf '%q ' psql -t -P pager=off -c "$SQL")
 fi
-
-[[ -n "$START_EPOCH" ]] && SQL="${SQL} AND time>=$(( START_EPOCH * TIME_SCALE ))"
-[[ -n "$END_EPOCH"   ]] && SQL="${SQL} AND time<$(( END_EPOCH * TIME_SCALE ))"
-SQL="${SQL} ORDER BY time;"
-
-echo "Querying $LOG_TABLE on $APPLIANCE ..."
-
-# The SQL is passed through two shell parses (this shell -> the remote
-# login shell ssh hands it to), so it's re-quoted with printf %q rather
-# than embedded in a hand-built quoted string -- %q produces a form that
-# round-trips correctly through exactly that kind of re-parse.
-REMOTE_CMD=$(printf '%q ' psql -t -P pager=off -c "$SQL")
 
 # Capture stdout (the actual query results) and stderr (SSH's own
 # connection chatter, e.g. "Warning: Permanently added ... to the list of
