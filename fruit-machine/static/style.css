@@ -1,0 +1,215 @@
+:root {
+    --gold: #d4af37;
+    --gold-light: #f5d76e;
+    --red: #a3122f;
+    --red-dark: #6e0c20;
+    --black: #1a1512;
+    --cream: #fdf6e3;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    background: radial-gradient(circle at top, #2b1c14 0%, var(--black) 70%);
+    color: var(--cream);
+    min-height: 100vh;
+}
+
+.wrap {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 1rem 1.25rem 3rem;
+}
+
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 0;
+    border-bottom: 3px solid var(--gold);
+    margin-bottom: 1.5rem;
+}
+
+.brand {
+    font-size: 1.5rem;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+    color: var(--gold-light);
+    text-decoration: none;
+    text-shadow: 0 0 8px rgba(212, 175, 55, 0.5);
+}
+
+.topbar nav a {
+    color: var(--cream);
+    margin-left: 1.25rem;
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+}
+.topbar nav a:hover { border-bottom-color: var(--gold); }
+
+.flashes { margin-bottom: 1rem; }
+.flash {
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 0.5rem;
+    font-weight: bold;
+}
+.flash-error { background: var(--red-dark); color: var(--cream); }
+.flash-success { background: #2e5f3e; color: var(--cream); }
+
+/* --- auth pages --- */
+.auth-card {
+    max-width: 360px;
+    margin: 3rem auto;
+    background: #241a13;
+    border: 2px solid var(--gold);
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+}
+.auth-card h1 { color: var(--gold-light); margin-top: 0; }
+.auth-card form { display: flex; flex-direction: column; gap: 0.9rem; text-align: left; }
+.auth-card label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; color: var(--gold); }
+.auth-card input {
+    padding: 0.55rem 0.7rem;
+    border-radius: 6px;
+    border: 1px solid var(--gold);
+    background: var(--cream);
+    color: var(--black);
+    font-size: 1rem;
+}
+.auth-switch { margin-top: 1.25rem; font-size: 0.9rem; }
+.auth-switch a { color: var(--gold-light); }
+.hint { color: #c9b896; font-size: 0.85rem; }
+
+/* --- buttons --- */
+.btn {
+    cursor: pointer;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    padding: 0.6rem 1.2rem;
+    font-size: 1rem;
+}
+.btn-gold {
+    background: linear-gradient(180deg, var(--gold-light), var(--gold));
+    color: var(--black);
+    box-shadow: 0 3px 0 #8a6d1f;
+}
+.btn-gold:active { transform: translateY(2px); box-shadow: 0 1px 0 #8a6d1f; }
+.btn-gold:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-small { padding: 0.3rem 0.6rem; font-size: 0.85rem; background: var(--gold); color: var(--black); border-radius: 5px; }
+.btn-danger { background: var(--red); color: var(--cream); }
+
+/* --- game layout --- */
+.game-layout {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 1.5rem;
+}
+@media (max-width: 720px) {
+    .game-layout { grid-template-columns: 1fr; }
+}
+
+.cabinet {
+    background: linear-gradient(180deg, var(--red), var(--red-dark));
+    border: 6px solid var(--gold);
+    border-radius: 18px;
+    padding: 1.5rem;
+    text-align: center;
+    box-shadow: 0 0 30px rgba(0,0,0,0.5), inset 0 0 20px rgba(0,0,0,0.3);
+}
+.cabinet-top {
+    font-size: 1.4rem;
+    font-weight: bold;
+    letter-spacing: 0.15em;
+    color: var(--gold-light);
+    text-shadow: 2px 2px 0 var(--black);
+    margin-bottom: 1rem;
+}
+
+.reels {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    background: var(--black);
+    border: 4px solid var(--gold);
+    border-radius: 10px;
+    padding: 1.5rem 1rem;
+    margin-bottom: 1rem;
+}
+.reel {
+    width: 80px;
+    height: 90px;
+    background: var(--cream);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.4);
+}
+.reel-symbol { font-size: 3rem; line-height: 1; }
+.reel.spinning .reel-symbol { animation: spin-blur 0.1s linear infinite; }
+@keyframes spin-blur {
+    0%   { transform: translateY(-10%); filter: blur(1px); }
+    50%  { transform: translateY(10%); filter: blur(2px); }
+    100% { transform: translateY(-10%); filter: blur(1px); }
+}
+
+.result { font-size: 1.2rem; font-weight: bold; margin-bottom: 1rem; }
+.result-win { color: var(--gold-light); text-shadow: 0 0 10px rgba(245, 215, 110, 0.8); }
+.result-lose { color: #e0c9a6; }
+
+.btn-spin {
+    font-size: 1.3rem;
+    padding: 0.9rem 2.5rem;
+    letter-spacing: 0.1em;
+    border-radius: 40px;
+}
+
+.token-count { margin-top: 1rem; font-size: 1.1rem; color: var(--gold-light); }
+
+.payout-table {
+    margin-top: 1.5rem;
+    background: #241a13;
+    border: 1px solid var(--gold);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    text-align: left;
+}
+.payout-table h2 { margin-top: 0; color: var(--gold-light); font-size: 1.1rem; }
+.payout-table ul { margin: 0; padding-left: 1.2rem; }
+.payout-table li { margin-bottom: 0.3rem; }
+
+/* --- side panel --- */
+.card {
+    background: #241a13;
+    border: 2px solid var(--gold);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.card h2 { margin-top: 0; color: var(--gold-light); font-size: 1.15rem; }
+
+.leaderboard { list-style: decimal; padding-left: 1.2rem; margin: 0; }
+.leaderboard li { display: flex; justify-content: space-between; padding: 0.2rem 0; }
+.leaderboard li.me { color: var(--gold-light); font-weight: bold; }
+
+.pos { color: #6fcf97; }
+.neg { color: #eb5757; }
+
+/* --- admin --- */
+.admin-table { width: 100%; border-collapse: collapse; }
+.admin-table th, .admin-table td {
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+}
+.admin-actions { display: flex; gap: 0.5rem; align-items: center; }
+.admin-actions form { display: flex; gap: 0.3rem; align-items: center; margin: 0; }
+.admin-actions input[type=number] { width: 60px; padding: 0.25rem; border-radius: 4px; border: 1px solid var(--gold); }
+.inline-form { display: flex; gap: 0.6rem; }
+.inline-form input { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--gold); }

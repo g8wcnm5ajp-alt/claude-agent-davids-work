@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Admin - Fruit Machine{% endblock %}
+{% block content %}
+<h1>Admin Panel</h1>
+
+<div class="card">
+    <h2>Players</h2>
+    <table class="admin-table">
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Tokens</th>
+                <th>Total Won</th>
+                <th>Total Spent</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td>{{ u['username'] }}</td>
+                <td>{{ u['tokens'] }}</td>
+                <td>{{ u['total_won'] }}</td>
+                <td>{{ u['total_spent'] }}</td>
+                <td>{{ u['created_at'][:10] }}</td>
+                <td class="admin-actions">
+                    <form method="post" action="{{ url_for('admin_add_tokens', user_id=u['id']) }}">
+                        <input type="number" name="amount" min="1" value="50" required>
+                        <button type="submit" class="btn btn-small">Add Tokens</button>
+                    </form>
+                    <form method="post" action="{{ url_for('admin_reset', user_id=u['id']) }}"
+                          onsubmit="return confirm('Reset {{ u['username'] }} to {{ 100 }} tokens and clear their stats?');">
+                        <button type="submit" class="btn btn-small btn-danger">Reset</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No players registered yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Change Admin Password</h2>
+    <form method="post" action="{{ url_for('admin_change_password') }}" class="inline-form">
+        <input type="password" name="new_password" placeholder="New password (min 8 chars)" minlength="8" required>
+        <button type="submit" class="btn btn-gold">Change Password</button>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Fruit Machine{% endblock %}
+{% block content %}
+<div class="game-layout">
+    <div class="machine-panel">
+        <div class="cabinet">
+            <div class="cabinet-top">FRUIT MACHINE</div>
+            <div class="reels" id="reels"
+                 data-final="{{ (last_reels or ['❓', '❓', '❓']) | join(',') }}"
+                 data-spin="{{ 'true' if last_reels else 'false' }}"
+                 data-symbols="{{ symbols | join(',') }}">
+                <div class="reel"><span class="reel-symbol">❓</span></div>
+                <div class="reel"><span class="reel-symbol">❓</span></div>
+                <div class="reel"><span class="reel-symbol">❓</span></div>
+            </div>
+
+            {% if last_reels %}
+                {% if last_win %}
+                    <div class="result result-win">🎉 WIN! +{{ last_payout }} tokens</div>
+                {% else %}
+                    <div class="result result-lose">No win this time -- try again!</div>
+                {% endif %}
+            {% endif %}
+
+            <form method="post" action="{{ url_for('spin') }}" id="spin-form">
+                <button type="submit" class="btn btn-gold btn-spin" {% if user['tokens'] < 1 %}disabled{% endif %}>
+                    {% if user['tokens'] < 1 %}OUT OF TOKENS{% else %}START / ROLL{% endif %}
+                </button>
+            </form>
+
+            <div class="token-count">Tokens: <strong>{{ user['tokens'] }}</strong></div>
+        </div>
+
+        <div class="payout-table">
+            <h2>Payouts</h2>
+            <ul>
+                <li>🍒 🍒 🍒 &mdash; 50 tokens (top prize!)</li>
+                <li>7️⃣ 7️⃣ 7️⃣ &mdash; 30 tokens</li>
+                <li>🔔 🔔 🔔 &mdash; 20 tokens</li>
+                <li>Any other matching triple &mdash; 10 tokens</li>
+            </ul>
+        </div>
+    </div>
+
+    <aside class="side-panel">
+        <div class="card">
+            <h2>Top 10 Winners</h2>
+            <ol class="leaderboard">
+                {% for row in leaderboard %}
+                    <li class="{{ 'me' if row['username'] == user['username'] }}">
+                        <span>{{ row['username'] }}</span>
+                        <span>{{ row['tokens'] }}</span>
+                    </li>
+                {% else %}
+                    <li>No players yet.</li>
+                {% endfor %}
+            </ol>
+        </div>
+
+        <div class="card">
+            <h2>House Stats</h2>
+            <p>Tokens spent by players: <strong>{{ house_spent }}</strong></p>
+            <p>Tokens paid out in wins: <strong>{{ house_won }}</strong></p>
+            <p>House net: <strong class="{{ 'pos' if house_net >= 0 else 'neg' }}">{{ house_net }}</strong></p>
+        </div>
+    </aside>
+</div>
+
+<script src="{{ url_for('static', filename='spin.js') }}"></script>
+{% endblock %}
