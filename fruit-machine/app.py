@@ -319,11 +319,21 @@ def game():
     last_payout = session.pop("last_payout", None)
     settings = get_settings()
 
+    # The DB is already updated by the time this page renders (the atomic
+    # UPDATE happened in /spin), but the reel-stop animation is purely
+    # client-side and takes ~1s+ to finish -- showing the *new* token
+    # count and win/lose result immediately would spoil the spin before
+    # it visually resolves. tokens_before_spin lets the template show the
+    # pre-spin count first; JS reveals the real numbers once the reels
+    # have actually stopped (see spin.js).
+    tokens_before_spin = (user["tokens"] - last_payout + SPIN_COST) if last_reels else None
+
     return render_template(
         "game.html", user=user, leaderboard=leaderboard,
         house_spent=totals["spent"], house_won=totals["won"], house_net=house_net,
         last_reels=last_reels, last_win=last_win, last_payout=last_payout,
         symbols=SYMBOLS, num_wheels=settings["num_wheels"],
+        tokens_before_spin=tokens_before_spin,
     )
 
 

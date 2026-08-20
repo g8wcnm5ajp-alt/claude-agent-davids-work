@@ -34,4 +34,18 @@
             symbolEl.textContent = finalSymbols[i];
         }, stopDelays[i]);
     });
+
+    // The token count and win/lose result are already updated server-side
+    // by the time this page loads (the DB write happens in /spin, before
+    // the redirect here) -- reveal them 1s after the *last* reel actually
+    // stops, not immediately, so the token total and result don't spoil
+    // the spin while it's still visually rotating.
+    const revealDelayMs = stopDelays[stopDelays.length - 1] + 1000;
+    setTimeout(() => {
+        const tokenEl = document.getElementById("token-count");
+        if (tokenEl) tokenEl.textContent = tokenEl.dataset.final;
+
+        const resultEl = document.getElementById("spin-result");
+        if (resultEl) resultEl.style.visibility = "visible";
+    }, revealDelayMs);
 })();

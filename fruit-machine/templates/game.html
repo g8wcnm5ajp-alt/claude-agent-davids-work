@@ -16,9 +16,9 @@
 
             {% if last_reels %}
                 {% if last_win %}
-                    <div class="result result-win">🎉 WIN! +{{ last_payout }} tokens</div>
+                    <div class="result result-win" id="spin-result" style="visibility: hidden;">🎉 WIN! +{{ last_payout }} tokens</div>
                 {% else %}
-                    <div class="result result-lose">No win this time -- try again!</div>
+                    <div class="result result-lose" id="spin-result" style="visibility: hidden;">No win this time -- try again!</div>
                 {% endif %}
             {% endif %}
 
@@ -28,7 +28,7 @@
                 </button>
             </form>
 
-            <div class="token-count">Tokens: <strong>{{ user['tokens'] }}</strong></div>
+            <div class="token-count">Tokens: <strong id="token-count" data-final="{{ user['tokens'] }}">{{ tokens_before_spin if last_reels else user['tokens'] }}</strong></div>
         </div>
 
         <div class="payout-table">
