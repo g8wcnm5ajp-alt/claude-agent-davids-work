@@ -14,7 +14,6 @@ cookies. Wheel count and win probability are admin-adjustable at runtime
 import os
 import random
 import sqlite3
-import time
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -56,16 +55,11 @@ MIN_WIN_PROBABILITY, MAX_WIN_PROBABILITY = 0.01, 0.99
 # random number of nudge credits (admin-adjustable range, defaults below)
 # to bump that one wheel up/down through the fixed SYMBOLS order (with
 # wraparound), seeing the adjacent symbols before committing, same as a
-# real fruit machine's nudge feature.
-DEFAULT_NUDGE_MIN, DEFAULT_NUDGE_MAX = 1, 3
+# real fruit machine's nudge feature. No time limit -- the player nudges
+# (or doesn't) at their own pace and presses START to confirm whatever
+# arrangement they're left with, which is when it's actually scored.
+DEFAULT_NUDGE_MIN, DEFAULT_NUDGE_MAX = 1, 6
 ABSOLUTE_NUDGE_MIN, ABSOLUTE_NUDGE_MAX = 0, 10
-
-# Nudge window: seconds from the moment the opportunity becomes available
-# to the player -- enforced server-side (a stale click past this is
-# rejected the same as running out of credits), not just a client-side
-# countdown. Admin-adjustable, like the rest of the nudge settings.
-DEFAULT_NUDGE_TIMEOUT_SECONDS = 30
-ABSOLUTE_NUDGE_TIMEOUT_MIN, ABSOLUTE_NUDGE_TIMEOUT_MAX = 5, 120
 
 SYMBOLS = ["\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣"]
 # cherry, lemon, orange, grapes, apple, bell, seven
@@ -125,6 +119,29 @@ def get_or_create_secret_key():
 
 app = Flask(__name__)
 app.secret_key = get_or_create_secret_key()
+
+
+def _static_version():
+    """Cache-busting suffix for static assets (?v=<mtime>) -- Flask's
+    default static file serving doesn't change the URL when a file's
+    content changes, so a browser that already cached spin.js from a
+    previous deploy can keep silently running stale JS against a fresh
+    backend after a redeploy (confirmed live: a fixed backend plus a
+    browser-cached old spin.js reproduced the exact bug the fix was
+    supposed to remove). Computed once from the file's mtime at process
+    start, not per-request."""
+    try:
+        return str(int(os.path.getmtime(os.path.join(app.static_folder, "spin.js"))))
+    except OSError:
+        return "0"
+
+
+STATIC_VERSION = _static_version()
+
+
+@app.context_processor
+def inject_static_version():
+    return {"static_version": STATIC_VERSION}
 
 
 # --- db ----------------------------------------------------------------
@@ -193,7 +210,6 @@ def init_db():
             ("win_probability", str(DEFAULT_WIN_PROBABILITY)),
             ("nudge_min", str(DEFAULT_NUDGE_MIN)),
             ("nudge_max", str(DEFAULT_NUDGE_MAX)),
-            ("nudge_timeout_seconds", str(DEFAULT_NUDGE_TIMEOUT_SECONDS)),
         ],
     )
     db.commit()
@@ -211,24 +227,11 @@ def get_settings():
         "win_probability": float(values.get("win_probability", DEFAULT_WIN_PROBABILITY)),
         "nudge_min": int(values.get("nudge_min", DEFAULT_NUDGE_MIN)),
         "nudge_max": int(values.get("nudge_max", DEFAULT_NUDGE_MAX)),
-        "nudge_timeout_seconds": int(values.get("nudge_timeout_seconds", DEFAULT_NUDGE_TIMEOUT_SECONDS)),
     }
 
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
-
-
-def finalize_nudge_as_loss(nudge_state):
-    """Ends an active nudge opportunity with no win -- used both when
-    credits run out and when the timeout expires. No token change: the
-    spin cost was already deducted when the original spin happened, and
-    nudging itself is free."""
-    session["last_reels"] = nudge_state["reels"]
-    session["last_win"] = False
-    session["last_payout"] = 0
-    session["last_source"] = "nudge"
-    session.pop("nudge_state", None)
 
 
 # --- auth helpers --------------------------------------------------------
@@ -363,14 +366,6 @@ def game():
     user = current_user()
     db = get_db()
 
-    # An active nudge opportunity that timed out (the admin-configured
-    # nudge_timeout_seconds since it became available) without the player
-    # acting on it gets
-    # finalized as a loss now, rather than left displayed indefinitely.
-    pending_nudge = session.get("nudge_state")
-    if pending_nudge and time.time() > pending_nudge["expires_at"]:
-        finalize_nudge_as_loss(pending_nudge)
-
     leaderboard = db.execute(
         "SELECT username, tokens FROM users WHERE is_admin = 0 ORDER BY tokens DESC LIMIT 10"
     ).fetchall()
@@ -386,9 +381,9 @@ def game():
     # "spin" -> this page load is the immediate aftermath of a fresh
     # /spin, so the reel-stop animation is about to run and the token
     # count / result / nudge availability should all stay hidden until it
-    # finishes (see spin.js). "nudge" -> a nudge action just concluded
-    # (won, or ran out of credits) -- no reel animation runs for that, so
-    # nothing needs to wait; reveal immediately.
+    # finishes (see spin.js). "nudge" -> a nudge confirmation just
+    # concluded (via /spin while a nudge was pending) -- no reel animation
+    # runs for that, so nothing needs to wait; reveal immediately.
     last_source = session.pop("last_source", None)
     settings = get_settings()
 
@@ -409,20 +404,21 @@ def game():
     # up/down preview symbols -- with more than 3 wheels, a near-miss can
     # leave more than one reel eligible at once (e.g. 2 of 5 wheels match,
     # leaving 3 off), and each of those needs its own preview, not just a
-    # single reel's.
+    # single reel's. Empty once credits run out, since there's nothing
+    # left to spend on a nudge -- the player's only move at that point is
+    # to press START and confirm whatever they're left with.
     nudge_state = session.get("nudge_state")
     nudge_previews = {}
     nudge_credits = None
-    nudge_seconds_remaining = None
     if nudge_state:
-        for idx in nudge_state["reel_indices"]:
-            pos = SYMBOLS.index(nudge_state["reels"][idx])
-            nudge_previews[idx] = {
-                "up": SYMBOLS[(pos + 1) % len(SYMBOLS)],
-                "down": SYMBOLS[(pos - 1) % len(SYMBOLS)],
-            }
         nudge_credits = nudge_state["credits"]
-        nudge_seconds_remaining = max(0, int(nudge_state["expires_at"] - time.time()))
+        if nudge_credits > 0:
+            for idx in nudge_state["reel_indices"]:
+                pos = SYMBOLS.index(nudge_state["reels"][idx])
+                nudge_previews[idx] = {
+                    "up": SYMBOLS[(pos + 1) % len(SYMBOLS)],
+                    "down": SYMBOLS[(pos - 1) % len(SYMBOLS)],
+                }
 
     return render_template(
         "game.html", user=user, leaderboard=leaderboard,
@@ -431,9 +427,9 @@ def game():
         symbols=SYMBOLS, num_wheels=settings["num_wheels"],
         tokens_before_spin=tokens_before_spin,
         should_delay_reveal=(last_source == "spin"),
+        nudge_active=(nudge_state is not None),
         nudge_previews=nudge_previews,
         nudge_credits=nudge_credits,
-        nudge_seconds_remaining=nudge_seconds_remaining,
         nudge_reels=(nudge_state["reels"] if nudge_state else None),
     )
 
@@ -444,6 +440,28 @@ def spin():
     user = current_user()
     db = get_db()
     settings = get_settings()
+
+    # An active nudge opportunity means START now means "confirm" rather
+    # than "spin again" -- score whatever arrangement the player nudged
+    # their way to (or left untouched), free, since the spin cost was
+    # already charged when the original spin happened.
+    nudge_state = session.get("nudge_state")
+    if nudge_state:
+        reels = nudge_state["reels"]
+        full_win = len(set(reels)) == 1
+        payout = PAYOUTS[reels[0]] if full_win else 0
+        if full_win:
+            db.execute(
+                "UPDATE users SET tokens = tokens + ?, total_won = total_won + ? WHERE id = ?",
+                (payout, payout, user["id"]),
+            )
+            db.commit()
+        session["last_reels"] = reels
+        session["last_win"] = full_win
+        session["last_payout"] = payout
+        session["last_source"] = "nudge"
+        session.pop("nudge_state", None)
+        return redirect(url_for("game"))
 
     reels, win, payout = spin_reels(settings["num_wheels"], settings["win_probability"])
 
@@ -470,9 +488,6 @@ def spin():
     session["last_payout"] = payout
     session["last_source"] = "spin"
 
-    # Starting a new spin abandons any unused nudge credits from a
-    # previous near-miss that the player never acted on.
-    session.pop("nudge_state", None)
     if not win and settings["nudge_max"] > 0:
         nudge_indices = find_nudge_reels(reels)
         if nudge_indices:
@@ -480,7 +495,6 @@ def spin():
                 "reels": list(reels),
                 "reel_indices": nudge_indices,
                 "credits": random.randint(settings["nudge_min"], settings["nudge_max"]),
-                "expires_at": time.time() + settings["nudge_timeout_seconds"],
             }
 
     return redirect(url_for("game"))
@@ -502,16 +516,6 @@ def nudge(reel_index, direction):
         flash("That wheel isn't nudgeable.", "error")
         return redirect(url_for("game"))
 
-    if time.time() > nudge_state["expires_at"]:
-        # The 10s window closed before this click arrived -- finalize as
-        # a loss rather than silently honoring a stale click.
-        finalize_nudge_as_loss(nudge_state)
-        flash("Nudge window expired.", "error")
-        return redirect(url_for("game"))
-
-    user = current_user()
-    db = get_db()
-
     reels = nudge_state["reels"]
     pos = SYMBOLS.index(reels[reel_index])
     # Free (no token cost) -- fixed reel order, wraps around at the ends.
@@ -519,39 +523,14 @@ def nudge(reel_index, direction):
     reels[reel_index] = SYMBOLS[new_pos]
     nudge_state["credits"] -= 1
 
-    full_win = len(set(reels)) == 1
-    if full_win:
-        winning_symbol = reels[0]
-        payout = PAYOUTS[winning_symbol]
-        # No SPIN_COST here -- that was already charged when the original
-        # spin happened; a nudge-completed win only pays out, it doesn't
-        # charge again.
-        db.execute(
-            "UPDATE users SET tokens = tokens + ?, total_won = total_won + ? WHERE id = ?",
-            (payout, payout, user["id"]),
-        )
-        db.commit()
-        session["last_reels"] = reels
-        session["last_win"] = True
-        session["last_payout"] = payout
-        session["last_source"] = "nudge"
-        session.pop("nudge_state", None)
-    elif nudge_state["credits"] <= 0:
-        finalize_nudge_as_loss(nudge_state)
-    else:
-        # Recompute which wheels are still nudgeable -- the wheel just
-        # nudged might now match a different, larger group than before.
-        # In practice the original majority can only stay the same size
-        # or grow (nudging never touches wheels already in it), so this
-        # can't actually go empty short of a full win (already handled
-        # above), but recomputing rather than reusing the original
-        # indices keeps this correct rather than assumed.
-        still_nudgeable = find_nudge_reels(reels)
-        if still_nudgeable:
-            nudge_state["reel_indices"] = still_nudgeable
-            session["nudge_state"] = nudge_state
-        else:
-            finalize_nudge_as_loss(nudge_state)
+    # Recompute which wheels are still nudgeable -- the wheel just nudged
+    # might now match a different, larger group than before (or, if it
+    # completed a full match, none at all). Nothing is scored here: the
+    # player presses START to confirm whatever arrangement they're left
+    # with, whether that's now, after more nudges, or after running out
+    # of credits -- see /spin's nudge_state branch.
+    nudge_state["reel_indices"] = find_nudge_reels(reels)
+    session["nudge_state"] = nudge_state
 
     return redirect(url_for("game"))
 
@@ -567,7 +546,6 @@ def admin_panel():
         "admin.html", users=users, admin=current_user(), settings=get_settings(),
         min_wheels=MIN_WHEELS, max_wheels=MAX_WHEELS,
         absolute_nudge_min=ABSOLUTE_NUDGE_MIN, absolute_nudge_max=ABSOLUTE_NUDGE_MAX,
-        absolute_nudge_timeout_min=ABSOLUTE_NUDGE_TIMEOUT_MIN, absolute_nudge_timeout_max=ABSOLUTE_NUDGE_TIMEOUT_MAX,
     )
 
 
@@ -579,9 +557,8 @@ def admin_settings():
         win_probability_pct = float(request.form.get("win_probability_pct", ""))
         nudge_min = int(request.form.get("nudge_min", ""))
         nudge_max = int(request.form.get("nudge_max", ""))
-        nudge_timeout_seconds = int(request.form.get("nudge_timeout_seconds", ""))
     except ValueError:
-        flash("Wheels, win chance, nudge credits, and nudge timeout must all be numbers.", "error")
+        flash("Wheels, win chance, and nudge credits must all be numbers.", "error")
         return redirect(url_for("admin_panel"))
 
     if not (MIN_WHEELS <= num_wheels <= MAX_WHEELS):
@@ -600,20 +577,15 @@ def admin_settings():
         flash("Min nudge credits can't be greater than max.", "error")
         return redirect(url_for("admin_panel"))
 
-    if not (ABSOLUTE_NUDGE_TIMEOUT_MIN <= nudge_timeout_seconds <= ABSOLUTE_NUDGE_TIMEOUT_MAX):
-        flash(f"Nudge timeout must be between {ABSOLUTE_NUDGE_TIMEOUT_MIN} and {ABSOLUTE_NUDGE_TIMEOUT_MAX} seconds.", "error")
-        return redirect(url_for("admin_panel"))
-
     db = get_db()
     db.execute("UPDATE settings SET value = ? WHERE key = 'num_wheels'", (str(num_wheels),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'win_probability'", (str(win_probability),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_min'", (str(nudge_min),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_max'", (str(nudge_max),))
-    db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_timeout_seconds'", (str(nudge_timeout_seconds),))
     db.commit()
     flash(
         f"Settings updated: {num_wheels} wheels, {win_probability_pct:.0f}% win chance, "
-        f"{nudge_min}-{nudge_max} nudge credits, {nudge_timeout_seconds}s nudge timeout.", "success",
+        f"{nudge_min}-{nudge_max} nudge credits.", "success",
     )
     return redirect(url_for("admin_panel"))
 
@@ -649,6 +621,19 @@ def admin_add_tokens(user_id):
     )
     db.commit()
     flash(f"Added {amount} tokens.", "success")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/delete/<int:user_id>", methods=["POST"])
+@admin_required
+def admin_delete(user_id):
+    db = get_db()
+    cur = db.execute("DELETE FROM users WHERE id = ? AND is_admin = 0", (user_id,))
+    db.commit()
+    if cur.rowcount:
+        flash("Account deleted.", "success")
+    else:
+        flash("No such account.", "error")
     return redirect(url_for("admin_panel"))
 
 

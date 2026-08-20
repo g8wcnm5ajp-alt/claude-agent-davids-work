@@ -24,7 +24,7 @@
                 {% endfor %}
             </div>
 
-            {% if last_reels %}
+            {% if last_reels and last_win is not none %}
                 {% set result_hidden = 'visibility: hidden;' if should_delay_reveal else '' %}
                 {% if last_win %}
                     <div class="result result-win" id="spin-result" style="{{ result_hidden }}">🎉 WIN! +{{ last_payout }} tokens</div>
@@ -33,18 +33,21 @@
                 {% endif %}
             {% endif %}
 
-            {% if nudge_previews %}
+            {% if nudge_active %}
                 <div class="nudge-credits-indicator" id="nudge-credits-indicator"
-                     style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}"
-                     data-seconds="{{ nudge_seconds_remaining }}">
-                    So close! {{ nudge_credits }} nudge{{ '' if nudge_credits == 1 else 's' }} left
-                    (<span id="nudge-countdown">{{ nudge_seconds_remaining }}</span>s)
+                     style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
+                    {% if nudge_credits > 0 %}
+                        So close! {{ nudge_credits }} nudge{{ '' if nudge_credits == 1 else 's' }} left --
+                        nudge a wheel or press CONFIRM to lock it in.
+                    {% else %}
+                        Out of nudges -- press CONFIRM to lock it in.
+                    {% endif %}
                 </div>
             {% endif %}
 
             <form method="post" action="{{ url_for('spin') }}" id="spin-form">
-                <button type="submit" class="btn btn-gold btn-spin" {% if user['tokens'] < 1 %}disabled{% endif %}>
-                    {% if user['tokens'] < 1 %}OUT OF TOKENS{% else %}START / ROLL{% endif %}
+                <button type="submit" class="btn btn-gold btn-spin" {% if user['tokens'] < 1 and not nudge_active %}disabled{% endif %}>
+                    {% if nudge_active %}CONFIRM{% elif user['tokens'] < 1 %}OUT OF TOKENS{% else %}START / ROLL{% endif %}
                 </button>
             </form>
 
@@ -86,5 +89,5 @@
     </aside>
 </div>
 
-<script src="{{ url_for('static', filename='spin.js') }}"></script>
+<script src="{{ url_for('static', filename='spin.js') }}?v={{ static_version }}"></script>
 {% endblock %}

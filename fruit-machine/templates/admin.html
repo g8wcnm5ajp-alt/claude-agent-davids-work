@@ -33,6 +33,10 @@
                           onsubmit="return confirm('Reset {{ u['username'] }} to {{ 100 }} tokens and clear their stats?');">
                         <button type="submit" class="btn btn-small btn-danger">Reset</button>
                     </form>
+                    <form method="post" action="{{ url_for('admin_delete', user_id=u['id']) }}"
+                          onsubmit="return confirm('Permanently delete {{ u['username'] }}\'s account? This cannot be undone.');">
+                        <button type="submit" class="btn btn-small btn-danger">Delete</button>
+                    </form>
                 </td>
             </tr>
             {% else %}
@@ -61,13 +65,9 @@
             <input type="number" name="nudge_max" min="{{ absolute_nudge_min }}" max="{{ absolute_nudge_max }}"
                    value="{{ settings['nudge_max'] }}" required>
         </label>
-        <label>Nudge timeout (s)
-            <input type="number" name="nudge_timeout_seconds" min="{{ absolute_nudge_timeout_min }}" max="{{ absolute_nudge_timeout_max }}"
-                   value="{{ settings['nudge_timeout_seconds'] }}" required>
-        </label>
         <button type="submit" class="btn btn-gold">Update Settings</button>
     </form>
-    <p class="hint">Wheels: 3-5. Win chance is the overall odds any spin wins something (payout tier is still weighted separately, cherries stay rarest). Nudges: how many free nudge credits (random within this range) a player gets when a losing spin lands one or more wheels away from a win, and how many seconds they have to use them before the opportunity expires. Set max nudges to 0 to disable nudges entirely.</p>
+    <p class="hint">Wheels: 3-5. Win chance is the overall odds any spin wins something (payout tier is still weighted separately, cherries stay rarest). Nudges: how many free nudge credits (random within this range) a player gets when a losing spin lands one or more wheels away from a win -- no time limit, the player nudges at their own pace and presses START to confirm and score whatever they're left with. Set max nudges to 0 to disable nudges entirely.</p>
 </div>
 
 <div class="card">
