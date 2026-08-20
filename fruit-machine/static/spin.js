@@ -11,7 +11,79 @@
     const allSymbols = reelsEl.dataset.symbols.split(",");
     const reelEls = reelsEl.querySelectorAll(".reel");
 
-    if (!shouldSpin) return;
+    // The token count, win/lose result, nudge-credits indicator, and the
+    // one eligible reel's nudge buttons are all already resolved server-
+    // side by the time this page loads -- but showing them immediately
+    // would spoil a fresh spin before its reel animation visually
+    // finishes. Called either right away (no animation running -- e.g. a
+    // nudge action, or a plain reload while a nudge is still pending) or
+    // after the reel-stop delay (a fresh spin just happened).
+    let revealDelayMs = 0;
+
+    function reveal() {
+        const tokenEl = document.getElementById("token-count");
+        if (tokenEl) tokenEl.textContent = tokenEl.dataset.final;
+
+        const resultEl = document.getElementById("spin-result");
+        if (resultEl) resultEl.style.visibility = "visible";
+
+        const creditsEl = document.getElementById("nudge-credits-indicator");
+        if (creditsEl) {
+            creditsEl.style.visibility = "visible";
+
+            // seconds_remaining was computed server-side at the moment
+            // /spin ran, before the reel animation played out client-side
+            // -- subtract however long that took so the visible countdown
+            // reflects what's actually left of the real 10s window, not a
+            // countdown that starts fresh once the animation finishes.
+            const countdownEl = document.getElementById("nudge-countdown");
+            let secondsLeft = Math.max(0, Math.round(parseInt(creditsEl.dataset.seconds, 10) - revealDelayMs / 1000));
+
+            const activeButtons = () => reelsEl.querySelectorAll(".nudge-btn.nudge-active");
+
+            function tick() {
+                if (countdownEl) countdownEl.textContent = secondsLeft;
+                if (secondsLeft <= 0) {
+                    clearInterval(countdownTimer);
+                    // Window closed client-side -- revert to the plain,
+                    // disabled look. The server independently rejects any
+                    // click that arrives after the real deadline anyway,
+                    // this is just matching visual feedback.
+                    activeButtons().forEach((btn) => {
+                        btn.disabled = true;
+                        btn.classList.remove("nudge-active");
+                        btn.innerHTML = btn.classList.contains("nudge-up") ? "&#9650;" : "&#9660;";
+                    });
+                    if (creditsEl) creditsEl.style.display = "none";
+                    return;
+                }
+                secondsLeft -= 1;
+            }
+            tick();
+            const countdownTimer = setInterval(tick, 1000);
+        }
+
+        const nudgeReelIndex = reelsEl.dataset.nudgeReel;
+        if (nudgeReelIndex !== "") {
+            const upBtn = reelsEl.querySelector('.nudge-up[data-reel-index="' + nudgeReelIndex + '"]');
+            const downBtn = reelsEl.querySelector('.nudge-down[data-reel-index="' + nudgeReelIndex + '"]');
+            if (upBtn) {
+                upBtn.disabled = false;
+                upBtn.classList.add("nudge-active");
+                upBtn.innerHTML = "&#9650; " + reelsEl.dataset.nudgeUp;
+            }
+            if (downBtn) {
+                downBtn.disabled = false;
+                downBtn.classList.add("nudge-active");
+                downBtn.innerHTML = "&#9660; " + reelsEl.dataset.nudgeDown;
+            }
+        }
+    }
+
+    if (!shouldSpin) {
+        reveal();
+        return;
+    }
 
     reelEls.forEach((reel) => reel.classList.add("spinning"));
 
@@ -35,20 +107,6 @@
         }, stopDelays[i]);
     });
 
-    // The token count, win/lose result, and nudge availability are all
-    // already resolved server-side by the time this page loads (the DB
-    // write happens in /spin, before the redirect here) -- reveal them 1s
-    // after the *last* reel actually stops, not immediately, so none of
-    // it spoils the spin while it's still visually rotating.
-    const revealDelayMs = stopDelays[stopDelays.length - 1] + 1000;
-    setTimeout(() => {
-        const tokenEl = document.getElementById("token-count");
-        if (tokenEl) tokenEl.textContent = tokenEl.dataset.final;
-
-        const resultEl = document.getElementById("spin-result");
-        if (resultEl) resultEl.style.visibility = "visible";
-
-        const nudgeEl = document.getElementById("nudge-controls");
-        if (nudgeEl) nudgeEl.style.visibility = "visible";
-    }, revealDelayMs);
+    revealDelayMs = stopDelays[stopDelays.length - 1] + 1000;
+    setTimeout(reveal, revealDelayMs);
 })();

@@ -14,6 +14,7 @@ cookies. Wheel count and win probability are admin-adjustable at runtime
 import os
 import random
 import sqlite3
+import time
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -58,6 +59,11 @@ MIN_WIN_PROBABILITY, MAX_WIN_PROBABILITY = 0.01, 0.99
 # real fruit machine's nudge feature.
 DEFAULT_NUDGE_MIN, DEFAULT_NUDGE_MAX = 1, 3
 ABSOLUTE_NUDGE_MIN, ABSOLUTE_NUDGE_MAX = 0, 10
+
+# Nudge window: 10s from the moment the opportunity becomes available to
+# the player -- enforced server-side (a stale click past this is rejected
+# the same as running out of credits), not just a client-side countdown.
+NUDGE_TIMEOUT_SECONDS = 10
 
 SYMBOLS = ["\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣"]
 # cherry, lemon, orange, grapes, apple, bell, seven
@@ -209,6 +215,18 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def finalize_nudge_as_loss(nudge_state):
+    """Ends an active nudge opportunity with no win -- used both when
+    credits run out and when the timeout expires. No token change: the
+    spin cost was already deducted when the original spin happened, and
+    nudging itself is free."""
+    session["last_reels"] = nudge_state["reels"]
+    session["last_win"] = False
+    session["last_payout"] = 0
+    session["last_source"] = "nudge"
+    session.pop("nudge_state", None)
+
+
 # --- auth helpers --------------------------------------------------------
 def current_user():
     uid = session.get("user_id")
@@ -340,6 +358,14 @@ def logout():
 def game():
     user = current_user()
     db = get_db()
+
+    # An active nudge opportunity that timed out (NUDGE_TIMEOUT_SECONDS
+    # since it became available) without the player acting on it gets
+    # finalized as a loss now, rather than left displayed indefinitely.
+    pending_nudge = session.get("nudge_state")
+    if pending_nudge and time.time() > pending_nudge["expires_at"]:
+        finalize_nudge_as_loss(pending_nudge)
+
     leaderboard = db.execute(
         "SELECT username, tokens FROM users WHERE is_admin = 0 ORDER BY tokens DESC LIMIT 10"
     ).fetchall()
@@ -386,6 +412,7 @@ def game():
             "up": SYMBOLS[(pos + 1) % len(SYMBOLS)],
             "down": SYMBOLS[(pos - 1) % len(SYMBOLS)],
             "credits": nudge_state["credits"],
+            "seconds_remaining": max(0, int(nudge_state["expires_at"] - time.time())),
         }
 
     return render_template(
@@ -442,6 +469,7 @@ def spin():
                 "reels": list(reels),
                 "reel_index": nudge_idx,
                 "credits": random.randint(settings["nudge_min"], settings["nudge_max"]),
+                "expires_at": time.time() + NUDGE_TIMEOUT_SECONDS,
             }
 
     return redirect(url_for("game"))
@@ -457,6 +485,13 @@ def nudge(direction):
     nudge_state = session.get("nudge_state")
     if not nudge_state or nudge_state["credits"] <= 0:
         flash("No nudges available.", "error")
+        return redirect(url_for("game"))
+
+    if time.time() > nudge_state["expires_at"]:
+        # The 10s window closed before this click arrived -- finalize as
+        # a loss rather than silently honoring a stale click.
+        finalize_nudge_as_loss(nudge_state)
+        flash("Nudge window expired.", "error")
         return redirect(url_for("game"))
 
     user = current_user()
@@ -488,14 +523,7 @@ def nudge(direction):
         session["last_source"] = "nudge"
         session.pop("nudge_state", None)
     elif nudge_state["credits"] <= 0:
-        # Out of nudges without completing a win -- finalize as a loss.
-        # No further token change: the spin cost was already deducted
-        # when the original spin happened, and nudging is free.
-        session["last_reels"] = reels
-        session["last_win"] = False
-        session["last_payout"] = 0
-        session["last_source"] = "nudge"
-        session.pop("nudge_state", None)
+        finalize_nudge_as_loss(nudge_state)
     else:
         session["nudge_state"] = nudge_state
 

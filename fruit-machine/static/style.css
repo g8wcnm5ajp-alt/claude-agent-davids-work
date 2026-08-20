@@ -137,8 +137,14 @@ body {
     background: var(--black);
     border: 4px solid var(--gold);
     border-radius: 10px;
-    padding: 1.5rem 1rem;
+    padding: 1rem;
     margin-bottom: 1rem;
+}
+.reel-column {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
 }
 .reel {
     width: 80px;
@@ -159,27 +165,42 @@ body {
     100% { transform: translateY(-10%); filter: blur(1px); }
 }
 
-.result { font-size: 1.2rem; font-weight: bold; margin-bottom: 1rem; }
-.result-win { color: var(--gold-light); text-shadow: 0 0 10px rgba(245, 215, 110, 0.8); }
-.result-lose { color: #e0c9a6; }
-
-.nudge-controls {
-    background: rgba(212, 175, 55, 0.15);
-    border: 2px solid var(--gold);
-    border-radius: 10px;
-    padding: 0.75rem 1rem;
-    margin-bottom: 1rem;
+/* Nudge buttons: always present above/below every reel (a permanent part
+   of the cabinet, like a real fruit machine), but only the one eligible
+   reel's pair is enabled/lit at a time -- everything else stays plain and
+   disabled. */
+.nudge-btn {
+    width: 80px;
+    padding: 0.3rem 0;
+    font-size: 1.1rem;
+    border-radius: 6px;
+    border: 1px solid rgba(212, 175, 55, 0.4);
+    background: #2e241a;
+    color: rgba(253, 246, 227, 0.35);
+    cursor: not-allowed;
+}
+.nudge-btn.nudge-active {
+    cursor: pointer;
+    border-color: var(--gold);
+    background: linear-gradient(180deg, var(--gold-light), var(--gold));
+    color: var(--black);
+    font-weight: bold;
     animation: nudge-glow 1s ease-in-out infinite alternate;
 }
 @keyframes nudge-glow {
     from { box-shadow: 0 0 6px rgba(212, 175, 55, 0.4); }
     to   { box-shadow: 0 0 16px rgba(245, 215, 110, 0.9); }
 }
-.nudge-title { margin: 0 0 0.5rem; font-weight: bold; color: var(--gold-light); }
-.nudge-buttons { display: flex; align-items: center; justify-content: center; gap: 1rem; }
-.nudge-buttons form { margin: 0; }
-.nudge-buttons .btn-small { font-size: 1.1rem; padding: 0.4rem 0.7rem; }
-.nudge-current { font-size: 2rem; }
+
+.result { font-size: 1.2rem; font-weight: bold; margin-bottom: 1rem; }
+.result-win { color: var(--gold-light); text-shadow: 0 0 10px rgba(245, 215, 110, 0.8); }
+.result-lose { color: #e0c9a6; }
+
+.nudge-credits-indicator {
+    font-weight: bold;
+    color: var(--gold-light);
+    margin-bottom: 1rem;
+}
 
 .btn-spin {
     font-size: 1.3rem;
