@@ -53,9 +53,17 @@
             <input type="number" name="win_probability_pct" min="1" max="99" step="1"
                    value="{{ (settings['win_probability'] * 100) | round(0, 'floor') | int }}" required>
         </label>
+        <label>Min nudges
+            <input type="number" name="nudge_min" min="{{ absolute_nudge_min }}" max="{{ absolute_nudge_max }}"
+                   value="{{ settings['nudge_min'] }}" required>
+        </label>
+        <label>Max nudges
+            <input type="number" name="nudge_max" min="{{ absolute_nudge_min }}" max="{{ absolute_nudge_max }}"
+                   value="{{ settings['nudge_max'] }}" required>
+        </label>
         <button type="submit" class="btn btn-gold">Update Settings</button>
     </form>
-    <p class="hint">Wheels: 3-5. Win chance is the overall odds any spin wins something (payout tier is still weighted separately, cherries stay rarest).</p>
+    <p class="hint">Wheels: 3-5. Win chance is the overall odds any spin wins something (payout tier is still weighted separately, cherries stay rarest). Nudges: how many free nudge credits (random within this range) a player gets when a losing spin lands one wheel away from a win. Set max to 0 to disable nudges entirely.</p>
 </div>
 
 <div class="card">

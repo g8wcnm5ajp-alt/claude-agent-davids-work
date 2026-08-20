@@ -163,6 +163,24 @@ body {
 .result-win { color: var(--gold-light); text-shadow: 0 0 10px rgba(245, 215, 110, 0.8); }
 .result-lose { color: #e0c9a6; }
 
+.nudge-controls {
+    background: rgba(212, 175, 55, 0.15);
+    border: 2px solid var(--gold);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    animation: nudge-glow 1s ease-in-out infinite alternate;
+}
+@keyframes nudge-glow {
+    from { box-shadow: 0 0 6px rgba(212, 175, 55, 0.4); }
+    to   { box-shadow: 0 0 16px rgba(245, 215, 110, 0.9); }
+}
+.nudge-title { margin: 0 0 0.5rem; font-weight: bold; color: var(--gold-light); }
+.nudge-buttons { display: flex; align-items: center; justify-content: center; gap: 1rem; }
+.nudge-buttons form { margin: 0; }
+.nudge-buttons .btn-small { font-size: 1.1rem; padding: 0.4rem 0.7rem; }
+.nudge-current { font-size: 2rem; }
+
 .btn-spin {
     font-size: 1.3rem;
     padding: 0.9rem 2.5rem;
