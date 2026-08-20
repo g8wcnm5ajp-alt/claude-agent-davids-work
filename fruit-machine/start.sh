@@ -5,8 +5,15 @@
 # Builds the fruit-machine Docker image and runs it as a container that
 # restarts automatically if Docker itself restarts or the host reboots
 # (--restart unless-stopped), so it "runs on load" without needing to be
-# started by hand each time. Token/leaderboard data persists across
-# container recreation via a named volume, not baked into the image.
+# started by hand each time. Token/leaderboard data, the session secret
+# key, and the self-signed TLS cert all persist across container
+# recreation via a named volume, not baked into the image.
+#
+# Serves HTTPS only (self-signed cert generated on first run by
+# entrypoint.sh) -- browsers will show a one-time trust warning on first
+# visit, since it isn't CA-signed. That's expected: this runs on both an
+# internal-only host with no public DNS and a public one, and self-signed
+# is the one approach that works identically on both.
 #
 # Usage: ./start.sh
 
@@ -14,7 +21,7 @@ set -euo pipefail
 
 IMAGE_NAME="fruit-machine"
 CONTAINER_NAME="fruit-machine"
-HOST_PORT=8888
+HOST_PORT=8889
 VOLUME_NAME="fruit-machine-data"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,4 +48,4 @@ docker run -d \
     -e "FRUIT_MACHINE_ADMIN_PASSWORD=${FRUIT_MACHINE_ADMIN_PASSWORD:-fruit-admin-2026}" \
     "$IMAGE_NAME"
 
-echo "Done. Fruit machine running at http://<host>:${HOST_PORT}/"
+echo "Done. Fruit machine running at https://<host>:${HOST_PORT}/ (self-signed cert -- browser will warn once)"
