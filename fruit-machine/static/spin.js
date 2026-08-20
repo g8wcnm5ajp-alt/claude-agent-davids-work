@@ -10,6 +10,44 @@
     const finalSymbols = reelsEl.dataset.final.split(",");
     const allSymbols = reelsEl.dataset.symbols.split(",");
     const reelEls = reelsEl.querySelectorAll(".reel");
+    // Maps a symbol string to the username it belongs to, for the reel
+    // slots that are a player's icon rather than a fixed fruit -- the
+    // rest of the pool renders as plain emoji text.
+    const iconMap = JSON.parse(reelsEl.dataset.iconMap || "{}");
+
+    function escapeHtml(s) {
+        return s.replace(/[&<>"']/g, (c) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        }[c]));
+    }
+
+    // Usernames are user-supplied at registration and end up in innerHTML
+    // (the alt text below) -- escape before ever concatenating into markup.
+    function iconMarkup(username, extraClass) {
+        const safeUser = escapeHtml(username);
+        return '<img class="reel-icon' + (extraClass ? " " + extraClass : "") +
+            '" src="/icon/' + encodeURIComponent(username) + '.svg" alt="' + safeUser + '">';
+    }
+
+    function setReelSymbol(symbolEl, symbol) {
+        const username = iconMap[symbol];
+        if (username) {
+            symbolEl.innerHTML = iconMarkup(username);
+        } else {
+            symbolEl.textContent = symbol;
+        }
+    }
+
+    // Builds the arrow + preview markup for a nudge button -- an icon
+    // preview gets a small thumbnail next to the arrow, a fruit gets the
+    // emoji as before.
+    function nudgeButtonMarkup(arrowEntity, symbol) {
+        const username = iconMap[symbol];
+        if (username) {
+            return arrowEntity + " " + iconMarkup(username, "reel-icon-tiny");
+        }
+        return arrowEntity + " " + symbol;
+    }
 
     // The token count, win/lose result, nudge-credits indicator, and
     // nudge buttons are all already resolved server-side by the time this
@@ -25,6 +63,9 @@
         const resultEl = document.getElementById("spin-result");
         if (resultEl) resultEl.style.visibility = "visible";
 
+        const sideNoteEl = document.getElementById("spin-side-note");
+        if (sideNoteEl) sideNoteEl.style.visibility = "visible";
+
         const creditsEl = document.getElementById("nudge-credits-indicator");
         if (creditsEl) creditsEl.style.visibility = "visible";
 
@@ -39,12 +80,12 @@
             if (upBtn) {
                 upBtn.disabled = false;
                 upBtn.classList.add("nudge-active");
-                upBtn.innerHTML = "&#9650; " + previews[reelIndex].up;
+                upBtn.innerHTML = nudgeButtonMarkup("&#9650;", previews[reelIndex].up);
             }
             if (downBtn) {
                 downBtn.disabled = false;
                 downBtn.classList.add("nudge-active");
-                downBtn.innerHTML = "&#9660; " + previews[reelIndex].down;
+                downBtn.innerHTML = nudgeButtonMarkup("&#9660;", previews[reelIndex].down);
             }
         });
     }
@@ -58,7 +99,7 @@
         // actual nudged-into-place symbol.
         reelEls.forEach((reel, i) => {
             const symbolEl = reel.querySelector(".reel-symbol");
-            if (symbolEl && finalSymbols[i] !== undefined) symbolEl.textContent = finalSymbols[i];
+            if (symbolEl && finalSymbols[i] !== undefined) setReelSymbol(symbolEl, finalSymbols[i]);
         });
         reveal();
         return;
@@ -76,13 +117,13 @@
     reelEls.forEach((reel, i) => {
         const symbolEl = reel.querySelector(".reel-symbol");
         const interval = setInterval(() => {
-            symbolEl.textContent = allSymbols[Math.floor(Math.random() * allSymbols.length)];
+            setReelSymbol(symbolEl, allSymbols[Math.floor(Math.random() * allSymbols.length)]);
         }, tickMs);
 
         setTimeout(() => {
             clearInterval(interval);
             reel.classList.remove("spinning");
-            symbolEl.textContent = finalSymbols[i];
+            setReelSymbol(symbolEl, finalSymbols[i]);
         }, stopDelays[i]);
     });
 

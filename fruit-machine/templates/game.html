@@ -10,6 +10,7 @@
                  data-final="{{ (display_reels or (['❓'] * num_wheels)) | join(',') }}"
                  data-spin="{{ 'true' if should_delay_reveal else 'false' }}"
                  data-symbols="{{ symbols | join(',') }}"
+                 data-icon-map="{{ icon_map | tojson | forceescape }}"
                  data-nudge-previews="{{ nudge_previews | tojson | forceescape }}">
                 {% for i in range(num_wheels) %}
                 <div class="reel-column">
@@ -30,6 +31,9 @@
                     <div class="result result-win" id="spin-result" style="{{ result_hidden }}">🎉 WIN! +{{ last_payout }} tokens</div>
                 {% else %}
                     <div class="result result-lose" id="spin-result" style="{{ result_hidden }}">No win this time -- try again!</div>
+                {% endif %}
+                {% if last_side_note %}
+                    <div class="result result-side-note" id="spin-side-note" style="{{ result_hidden }}">{{ last_side_note }}</div>
                 {% endif %}
             {% endif %}
 
@@ -61,6 +65,11 @@
                 <li>All 7️⃣ &mdash; 30 tokens</li>
                 <li>All 🔔 &mdash; 20 tokens</li>
                 <li>All matching, any other fruit &mdash; 10 tokens</li>
+                <li class="icon-payout-row">
+                    <img class="reel-icon reel-icon-small" src="{{ url_for('player_icon_svg', username=my_username) }}" alt="your icon">
+                    All your icon &mdash; a bonus, taken from every other player
+                </li>
+                <li>All another player's icon &mdash; a smaller bonus, taken from them</li>
             </ul>
         </div>
     </div>
@@ -71,7 +80,10 @@
             <ol class="leaderboard">
                 {% for row in leaderboard %}
                     <li class="{{ 'me' if row['username'] == user['username'] }}">
-                        <span>{{ row['username'] }}</span>
+                        <span class="leaderboard-name">
+                            <img class="reel-icon reel-icon-small" src="{{ url_for('player_icon_svg', username=row['username']) }}" alt="">
+                            {{ row['username'] }}
+                        </span>
                         <span>{{ row['tokens'] }}</span>
                     </li>
                 {% else %}

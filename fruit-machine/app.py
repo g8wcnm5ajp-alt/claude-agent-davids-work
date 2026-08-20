@@ -11,13 +11,14 @@ cookies. Wheel count and win probability are admin-adjustable at runtime
 (SYMBOL_WEIGHTS / PAYOUTS below) are still fixed constants.
 """
 
+import hashlib
 import os
 import random
 import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
 
-from flask import Flask, g, redirect, render_template, request, session, url_for, flash
+from flask import Flask, Response, g, redirect, render_template, request, session, url_for, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 
 DB_PATH = os.environ.get("FRUIT_MACHINE_DB", "/data/fruit_machine.db")
@@ -60,6 +61,23 @@ MIN_WIN_PROBABILITY, MAX_WIN_PROBABILITY = 0.01, 0.99
 # arrangement they're left with, which is when it's actually scored.
 DEFAULT_NUDGE_MIN, DEFAULT_NUDGE_MAX = 1, 6
 ABSOLUTE_NUDGE_MIN, ABSOLUTE_NUDGE_MAX = 0, 10
+
+# Player name-icons: every registered (non-admin) player has a personal
+# reel symbol -- player_icon(username), e.g. "Joe 1" -- mixed into the
+# normal fruit pool. Landing a full line of icons pays out differently
+# from a fruit win: instead of a fixed house payout, tokens move BETWEEN
+# players. Landing your OWN icon pays you a bonus funded by every other
+# player (a shared "someone hit the jackpot" cost); landing someone
+# ELSE's icon pays a smaller bonus funded specifically by that player.
+# All four amounts, plus what fraction of wins are an icon win at all,
+# are admin-adjustable.
+DEFAULT_ICON_CHANCE_PCT = 15.0
+DEFAULT_OWN_ICON_BONUS = 20
+DEFAULT_OTHER_PLAYERS_PENALTY = 10
+DEFAULT_OTHER_ICON_BONUS = 5
+DEFAULT_ICON_OWNER_PENALTY = 5
+MIN_ICON_CHANCE_PCT, MAX_ICON_CHANCE_PCT = 0.0, 100.0
+ABSOLUTE_ICON_AMOUNT_MIN, ABSOLUTE_ICON_AMOUNT_MAX = 0, 500
 
 SYMBOLS = ["\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣"]
 # cherry, lemon, orange, grapes, apple, bell, seven
@@ -124,14 +142,18 @@ app.secret_key = get_or_create_secret_key()
 def _static_version():
     """Cache-busting suffix for static assets (?v=<mtime>) -- Flask's
     default static file serving doesn't change the URL when a file's
-    content changes, so a browser that already cached spin.js from a
-    previous deploy can keep silently running stale JS against a fresh
-    backend after a redeploy (confirmed live: a fixed backend plus a
-    browser-cached old spin.js reproduced the exact bug the fix was
-    supposed to remove). Computed once from the file's mtime at process
-    start, not per-request."""
+    content changes, so a browser that already cached spin.js or
+    style.css from a previous deploy can keep silently running/rendering
+    the stale version against a fresh backend after a redeploy (confirmed
+    live: a fixed backend plus a browser-cached old spin.js reproduced the
+    exact bug the fix was supposed to remove). One shared version covering
+    both files, computed once from their latest mtime at process start,
+    not per-request."""
     try:
-        return str(int(os.path.getmtime(os.path.join(app.static_folder, "spin.js"))))
+        return str(int(max(
+            os.path.getmtime(os.path.join(app.static_folder, "spin.js")),
+            os.path.getmtime(os.path.join(app.static_folder, "style.css")),
+        )))
     except OSError:
         return "0"
 
@@ -210,6 +232,11 @@ def init_db():
             ("win_probability", str(DEFAULT_WIN_PROBABILITY)),
             ("nudge_min", str(DEFAULT_NUDGE_MIN)),
             ("nudge_max", str(DEFAULT_NUDGE_MAX)),
+            ("icon_chance_pct", str(DEFAULT_ICON_CHANCE_PCT)),
+            ("own_icon_bonus", str(DEFAULT_OWN_ICON_BONUS)),
+            ("other_players_penalty", str(DEFAULT_OTHER_PLAYERS_PENALTY)),
+            ("other_icon_bonus", str(DEFAULT_OTHER_ICON_BONUS)),
+            ("icon_owner_penalty", str(DEFAULT_ICON_OWNER_PENALTY)),
         ],
     )
     db.commit()
@@ -227,6 +254,11 @@ def get_settings():
         "win_probability": float(values.get("win_probability", DEFAULT_WIN_PROBABILITY)),
         "nudge_min": int(values.get("nudge_min", DEFAULT_NUDGE_MIN)),
         "nudge_max": int(values.get("nudge_max", DEFAULT_NUDGE_MAX)),
+        "icon_chance_pct": float(values.get("icon_chance_pct", DEFAULT_ICON_CHANCE_PCT)),
+        "own_icon_bonus": int(values.get("own_icon_bonus", DEFAULT_OWN_ICON_BONUS)),
+        "other_players_penalty": int(values.get("other_players_penalty", DEFAULT_OTHER_PLAYERS_PENALTY)),
+        "other_icon_bonus": int(values.get("other_icon_bonus", DEFAULT_OTHER_ICON_BONUS)),
+        "icon_owner_penalty": int(values.get("icon_owner_penalty", DEFAULT_ICON_OWNER_PENALTY)),
     }
 
 
@@ -265,26 +297,131 @@ def admin_required(view):
 
 
 # --- game logic ------------------------------------------------------------
-def spin_reels(num_wheels, win_probability):
-    """Returns (list of num_wheels symbols, win, payout). A win is still
-    ALL wheels matching (generalized from the original fixed-3-wheel
-    "row of three" rule) -- more wheels only changes the visual
-    spectacle of a win, not the actual odds, since win/lose is decided by
-    the win_probability gate below, not by independently-random wheels
-    happening to agree."""
+def player_icon(username):
+    return f"{username} 1"
+
+
+def get_icon_owners(db):
+    """Maps every registered (non-admin) player's personal reel icon to
+    their (id, username) -- e.g. {"Joe 1": (3, "Joe")}. Rebuilt fresh on
+    every spin/nudge (not cached) since players can register or be
+    deleted between one spin and the next."""
+    rows = db.execute("SELECT id, username FROM users WHERE is_admin = 0").fetchall()
+    return {player_icon(r["username"]): (r["id"], r["username"]) for r in rows}
+
+
+def effective_symbols(icon_owners):
+    """The full reel symbol pool for this request: the fixed fruits plus
+    every currently-registered player's icon."""
+    return SYMBOLS + list(icon_owners.keys())
+
+
+ICON_SIZE = 64
+ICON_GRID_COLS = 3  # mirrored to 5 wide, GitHub-identicon style
+ICON_GRID_ROWS = 5
+
+
+def render_identicon_svg(username):
+    """A small, unique, deterministic graphic per username -- no upload
+    or per-account setup needed, and it automatically covers every
+    existing account (including ones created before this feature) since
+    it's a pure function of the username, not stored data. Same
+    username always produces the same pattern; different usernames
+    almost never collide (a 15-bit pattern plus a hash-derived color)."""
+    digest = hashlib.md5(username.encode("utf-8")).hexdigest()
+    color = "#" + digest[0:6]
+    bits = [int(c, 16) % 2 for c in digest[6 : 6 + ICON_GRID_COLS * ICON_GRID_ROWS]]
+
+    cell = ICON_SIZE // ICON_GRID_ROWS
+    rects = []
+    for row in range(ICON_GRID_ROWS):
+        for col in range(ICON_GRID_COLS):
+            if not bits[row * ICON_GRID_COLS + col]:
+                continue
+            y = row * cell
+            x_left = col * cell
+            x_right = (ICON_GRID_ROWS - 1 - col) * cell
+            rects.append(f'<rect x="{x_left}" y="{y}" width="{cell}" height="{cell}" fill="{color}"/>')
+            if x_right != x_left:
+                rects.append(f'<rect x="{x_right}" y="{y}" width="{cell}" height="{cell}" fill="{color}"/>')
+
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{ICON_SIZE}" height="{ICON_SIZE}" '
+        f'viewBox="0 0 {ICON_SIZE} {ICON_SIZE}">'
+        f'<rect width="{ICON_SIZE}" height="{ICON_SIZE}" fill="#eaf6ff"/>'
+        + "".join(rects)
+        + "</svg>"
+    )
+
+
+def spin_reels(num_wheels, win_probability, icon_owners, icon_chance_pct):
+    """Returns (list of num_wheels symbols, win). A win is still ALL
+    wheels matching (generalized from the original fixed-3-wheel "row of
+    three" rule) -- more wheels only changes the visual spectacle of a
+    win, not the actual odds, since win/lose is decided by the
+    win_probability gate below, not by independently-random wheels
+    happening to agree. Payout isn't decided here -- see resolve_win --
+    since an icon win's payout depends on who owns the icon, not a fixed
+    lookup table."""
     if random.random() < win_probability:
-        symbols = list(SYMBOL_WEIGHTS.keys())
-        weights = list(SYMBOL_WEIGHTS.values())
-        winning_symbol = random.choices(symbols, weights=weights, k=1)[0]
-        return [winning_symbol] * num_wheels, True, PAYOUTS[winning_symbol]
+        if icon_owners and random.random() < (icon_chance_pct / 100.0):
+            winning_symbol = random.choice(list(icon_owners.keys()))
+        else:
+            symbols = list(SYMBOL_WEIGHTS.keys())
+            weights = list(SYMBOL_WEIGHTS.values())
+            winning_symbol = random.choices(symbols, weights=weights, k=1)[0]
+        return [winning_symbol] * num_wheels, True
 
     # Deliberately not an all-match -- retry until the wheels differ from
     # a real all-of-a-kind, so a losing spin is a genuine near-miss rather
-    # than an accidental match slipping through.
+    # than an accidental match slipping through. Drawn from the full pool
+    # (fruits + icons), so a near-miss -- and therefore a nudge -- can
+    # land on a player's icon too, not just fruits.
+    all_symbols = effective_symbols(icon_owners)
     while True:
-        reels = [random.choice(SYMBOLS) for _ in range(num_wheels)]
+        reels = [random.choice(all_symbols) for _ in range(num_wheels)]
         if len(set(reels)) > 1:
-            return reels, False, 0
+            return reels, False
+
+
+def resolve_win(db, reels, spinner, icon_owners, settings):
+    """Scores a full-match reel arrangement for the spinning player.
+    A fixed fruit symbol pays its flat house amount, same as always -- no
+    side effects. A player icon instead moves tokens BETWEEN players:
+    side effects (the other player(s)' balances) are written here, in
+    the same DB transaction the caller commits, floored at 0 so a
+    penalty never takes a balance negative. Returns (payout for the
+    spinner, a note to display, or None)."""
+    symbol = reels[0]
+    if symbol in PAYOUTS:
+        return PAYOUTS[symbol], None
+
+    owner = icon_owners.get(symbol)
+    if owner is None:
+        # The icon's owner was deleted since these reels were generated
+        # or nudged into place -- treat it as a dead symbol rather than
+        # pay out for a player who no longer exists.
+        return 0, None
+    owner_id, owner_username = owner
+
+    if owner_id == spinner["id"]:
+        db.execute(
+            "UPDATE users SET tokens = MAX(tokens - ?, 0) WHERE is_admin = 0 AND id != ?",
+            (settings["other_players_penalty"], spinner["id"]),
+        )
+        return (
+            settings["own_icon_bonus"],
+            f"Every other player lost {settings['other_players_penalty']} tokens!",
+        )
+
+    db.execute(
+        "UPDATE users SET tokens = MAX(tokens - ?, 0) WHERE id = ?",
+        (settings["icon_owner_penalty"], owner_id),
+    )
+    return (
+        settings["other_icon_bonus"],
+        f"{owner_username} lost {settings['icon_owner_penalty']} tokens!",
+    )
 
 
 def find_nudge_reels(reels):
@@ -359,6 +496,18 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/icon/<username>.svg")
+@login_required
+def player_icon_svg(username):
+    """Deterministic per-player identicon, generated on the fly (no
+    storage) -- see render_identicon_svg. Cacheable indefinitely since
+    the same username always renders the same image."""
+    svg = render_identicon_svg(username)
+    resp = Response(svg, mimetype="image/svg+xml")
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
 # --- routes: game ----------------------------------------------------------
 @app.route("/")
 @login_required
@@ -378,6 +527,7 @@ def game():
     last_reels = session.pop("last_reels", None)
     last_win = session.pop("last_win", None)
     last_payout = session.pop("last_payout", None)
+    last_side_note = session.pop("last_side_note", None)
     # "spin" -> this page load is the immediate aftermath of a fresh
     # /spin, so the reel-stop animation is about to run and the token
     # count / result / nudge availability should all stay hidden until it
@@ -407,6 +557,9 @@ def game():
     # single reel's. Empty once credits run out, since there's nothing
     # left to spend on a nudge -- the player's only move at that point is
     # to press START and confirm whatever they're left with.
+    icon_owners = get_icon_owners(db)
+    all_symbols = effective_symbols(icon_owners)
+
     nudge_state = session.get("nudge_state")
     nudge_previews = {}
     nudge_credits = None
@@ -414,17 +567,25 @@ def game():
         nudge_credits = nudge_state["credits"]
         if nudge_credits > 0:
             for idx in nudge_state["reel_indices"]:
-                pos = SYMBOLS.index(nudge_state["reels"][idx])
+                cur_symbol = nudge_state["reels"][idx]
+                pos = all_symbols.index(cur_symbol) if cur_symbol in all_symbols else 0
                 nudge_previews[idx] = {
-                    "up": SYMBOLS[(pos + 1) % len(SYMBOLS)],
-                    "down": SYMBOLS[(pos - 1) % len(SYMBOLS)],
+                    "up": all_symbols[(pos + 1) % len(all_symbols)],
+                    "down": all_symbols[(pos - 1) % len(all_symbols)],
                 }
+
+    # Maps each icon symbol string to the plain username the reel-symbol
+    # JS needs to build /icon/<username>.svg -- separate from icon_owners
+    # (which carries the id too, only needed server-side for payouts).
+    icon_map = {icon: username for icon, (_uid, username) in icon_owners.items()}
 
     return render_template(
         "game.html", user=user, leaderboard=leaderboard,
         house_spent=totals["spent"], house_won=totals["won"], house_net=house_net,
         last_reels=last_reels, last_win=last_win, last_payout=last_payout,
-        symbols=SYMBOLS, num_wheels=settings["num_wheels"],
+        last_side_note=last_side_note,
+        symbols=all_symbols, icon_map=icon_map, num_wheels=settings["num_wheels"],
+        my_username=user["username"],
         tokens_before_spin=tokens_before_spin,
         should_delay_reveal=(last_source == "spin"),
         nudge_active=(nudge_state is not None),
@@ -449,8 +610,11 @@ def spin():
     if nudge_state:
         reels = nudge_state["reels"]
         full_win = len(set(reels)) == 1
-        payout = PAYOUTS[reels[0]] if full_win else 0
+        payout = 0
+        side_note = None
         if full_win:
+            icon_owners = get_icon_owners(db)
+            payout, side_note = resolve_win(db, reels, user, icon_owners, settings)
             db.execute(
                 "UPDATE users SET tokens = tokens + ?, total_won = total_won + ? WHERE id = ?",
                 (payout, payout, user["id"]),
@@ -459,11 +623,17 @@ def spin():
         session["last_reels"] = reels
         session["last_win"] = full_win
         session["last_payout"] = payout
+        session["last_side_note"] = side_note
         session["last_source"] = "nudge"
         session.pop("nudge_state", None)
         return redirect(url_for("game"))
 
-    reels, win, payout = spin_reels(settings["num_wheels"], settings["win_probability"])
+    icon_owners = get_icon_owners(db)
+    reels, win = spin_reels(settings["num_wheels"], settings["win_probability"], icon_owners, settings["icon_chance_pct"])
+    payout = 0
+    side_note = None
+    if win:
+        payout, side_note = resolve_win(db, reels, user, icon_owners, settings)
 
     # Atomic, race-safe update computed entirely in SQL relative to the
     # row's CURRENT value at write time (tokens = tokens - cost + payout),
@@ -486,6 +656,7 @@ def spin():
     session["last_reels"] = reels
     session["last_win"] = win
     session["last_payout"] = payout
+    session["last_side_note"] = side_note
     session["last_source"] = "spin"
 
     if not win and settings["nudge_max"] > 0:
@@ -516,11 +687,19 @@ def nudge(reel_index, direction):
         flash("That wheel isn't nudgeable.", "error")
         return redirect(url_for("game"))
 
+    db = get_db()
+    icon_owners = get_icon_owners(db)
+    all_symbols = effective_symbols(icon_owners)
+
     reels = nudge_state["reels"]
-    pos = SYMBOLS.index(reels[reel_index])
+    cur_symbol = reels[reel_index]
+    # in-list check rather than assuming: the reel might currently show
+    # another player's icon whose account was deleted since this nudge
+    # round started.
+    pos = all_symbols.index(cur_symbol) if cur_symbol in all_symbols else 0
     # Free (no token cost) -- fixed reel order, wraps around at the ends.
-    new_pos = (pos + 1) % len(SYMBOLS) if direction == "up" else (pos - 1) % len(SYMBOLS)
-    reels[reel_index] = SYMBOLS[new_pos]
+    new_pos = (pos + 1) % len(all_symbols) if direction == "up" else (pos - 1) % len(all_symbols)
+    reels[reel_index] = all_symbols[new_pos]
     nudge_state["credits"] -= 1
 
     # Recompute which wheels are still nudgeable -- the wheel just nudged
@@ -546,6 +725,8 @@ def admin_panel():
         "admin.html", users=users, admin=current_user(), settings=get_settings(),
         min_wheels=MIN_WHEELS, max_wheels=MAX_WHEELS,
         absolute_nudge_min=ABSOLUTE_NUDGE_MIN, absolute_nudge_max=ABSOLUTE_NUDGE_MAX,
+        min_icon_chance_pct=MIN_ICON_CHANCE_PCT, max_icon_chance_pct=MAX_ICON_CHANCE_PCT,
+        absolute_icon_amount_min=ABSOLUTE_ICON_AMOUNT_MIN, absolute_icon_amount_max=ABSOLUTE_ICON_AMOUNT_MAX,
     )
 
 
@@ -557,8 +738,13 @@ def admin_settings():
         win_probability_pct = float(request.form.get("win_probability_pct", ""))
         nudge_min = int(request.form.get("nudge_min", ""))
         nudge_max = int(request.form.get("nudge_max", ""))
+        icon_chance_pct = float(request.form.get("icon_chance_pct", ""))
+        own_icon_bonus = int(request.form.get("own_icon_bonus", ""))
+        other_players_penalty = int(request.form.get("other_players_penalty", ""))
+        other_icon_bonus = int(request.form.get("other_icon_bonus", ""))
+        icon_owner_penalty = int(request.form.get("icon_owner_penalty", ""))
     except ValueError:
-        flash("Wheels, win chance, and nudge credits must all be numbers.", "error")
+        flash("All settings fields must be numbers.", "error")
         return redirect(url_for("admin_panel"))
 
     if not (MIN_WHEELS <= num_wheels <= MAX_WHEELS):
@@ -577,15 +763,28 @@ def admin_settings():
         flash("Min nudge credits can't be greater than max.", "error")
         return redirect(url_for("admin_panel"))
 
+    if not (MIN_ICON_CHANCE_PCT <= icon_chance_pct <= MAX_ICON_CHANCE_PCT):
+        flash(f"Icon win chance must be between {MIN_ICON_CHANCE_PCT:.0f}% and {MAX_ICON_CHANCE_PCT:.0f}%.", "error")
+        return redirect(url_for("admin_panel"))
+    icon_amounts = [own_icon_bonus, other_players_penalty, other_icon_bonus, icon_owner_penalty]
+    if not all(ABSOLUTE_ICON_AMOUNT_MIN <= v <= ABSOLUTE_ICON_AMOUNT_MAX for v in icon_amounts):
+        flash(f"Icon bonus/penalty amounts must be between {ABSOLUTE_ICON_AMOUNT_MIN} and {ABSOLUTE_ICON_AMOUNT_MAX}.", "error")
+        return redirect(url_for("admin_panel"))
+
     db = get_db()
     db.execute("UPDATE settings SET value = ? WHERE key = 'num_wheels'", (str(num_wheels),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'win_probability'", (str(win_probability),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_min'", (str(nudge_min),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_max'", (str(nudge_max),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'icon_chance_pct'", (str(icon_chance_pct),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'own_icon_bonus'", (str(own_icon_bonus),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'other_players_penalty'", (str(other_players_penalty),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'other_icon_bonus'", (str(other_icon_bonus),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'icon_owner_penalty'", (str(icon_owner_penalty),))
     db.commit()
     flash(
         f"Settings updated: {num_wheels} wheels, {win_probability_pct:.0f}% win chance, "
-        f"{nudge_min}-{nudge_max} nudge credits.", "success",
+        f"{nudge_min}-{nudge_max} nudge credits, {icon_chance_pct:.0f}% icon chance.", "success",
     )
     return redirect(url_for("admin_panel"))
 

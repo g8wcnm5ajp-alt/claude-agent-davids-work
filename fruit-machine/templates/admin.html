@@ -65,9 +65,30 @@
             <input type="number" name="nudge_max" min="{{ absolute_nudge_min }}" max="{{ absolute_nudge_max }}"
                    value="{{ settings['nudge_max'] }}" required>
         </label>
+        <label>Icon win chance %
+            <input type="number" name="icon_chance_pct" min="{{ min_icon_chance_pct }}" max="{{ max_icon_chance_pct }}" step="1"
+                   value="{{ settings['icon_chance_pct'] | round(0, 'floor') | int }}" required>
+        </label>
+        <label>Own icon bonus
+            <input type="number" name="own_icon_bonus" min="{{ absolute_icon_amount_min }}" max="{{ absolute_icon_amount_max }}"
+                   value="{{ settings['own_icon_bonus'] }}" required>
+        </label>
+        <label>Other players lose
+            <input type="number" name="other_players_penalty" min="{{ absolute_icon_amount_min }}" max="{{ absolute_icon_amount_max }}"
+                   value="{{ settings['other_players_penalty'] }}" required>
+        </label>
+        <label>Other's icon bonus
+            <input type="number" name="other_icon_bonus" min="{{ absolute_icon_amount_min }}" max="{{ absolute_icon_amount_max }}"
+                   value="{{ settings['other_icon_bonus'] }}" required>
+        </label>
+        <label>Icon owner loses
+            <input type="number" name="icon_owner_penalty" min="{{ absolute_icon_amount_min }}" max="{{ absolute_icon_amount_max }}"
+                   value="{{ settings['icon_owner_penalty'] }}" required>
+        </label>
         <button type="submit" class="btn btn-gold">Update Settings</button>
     </form>
     <p class="hint">Wheels: 3-5. Win chance is the overall odds any spin wins something (payout tier is still weighted separately, cherries stay rarest). Nudges: how many free nudge credits (random within this range) a player gets when a losing spin lands one or more wheels away from a win -- no time limit, the player nudges at their own pace and presses START to confirm and score whatever they're left with. Set max nudges to 0 to disable nudges entirely.</p>
+    <p class="hint">Player icons: every registered player has a personal reel symbol (their name), mixed into the normal fruit pool. "Icon win chance %" is the share of WINNING spins that land on someone's icon instead of a fruit (0 disables icons entirely). Landing your own icon pays you the "own icon bonus", funded by every other player losing "other players lose" tokens each. Landing another player's icon pays you the smaller "other's icon bonus", funded by that specific player losing "icon owner loses" tokens. No player's balance is ever taken below 0.</p>
 </div>
 
 <div class="card">
