@@ -60,10 +60,12 @@ MIN_WIN_PROBABILITY, MAX_WIN_PROBABILITY = 0.01, 0.99
 DEFAULT_NUDGE_MIN, DEFAULT_NUDGE_MAX = 1, 3
 ABSOLUTE_NUDGE_MIN, ABSOLUTE_NUDGE_MAX = 0, 10
 
-# Nudge window: 10s from the moment the opportunity becomes available to
-# the player -- enforced server-side (a stale click past this is rejected
-# the same as running out of credits), not just a client-side countdown.
-NUDGE_TIMEOUT_SECONDS = 10
+# Nudge window: seconds from the moment the opportunity becomes available
+# to the player -- enforced server-side (a stale click past this is
+# rejected the same as running out of credits), not just a client-side
+# countdown. Admin-adjustable, like the rest of the nudge settings.
+DEFAULT_NUDGE_TIMEOUT_SECONDS = 30
+ABSOLUTE_NUDGE_TIMEOUT_MIN, ABSOLUTE_NUDGE_TIMEOUT_MAX = 5, 120
 
 SYMBOLS = ["\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣"]
 # cherry, lemon, orange, grapes, apple, bell, seven
@@ -191,6 +193,7 @@ def init_db():
             ("win_probability", str(DEFAULT_WIN_PROBABILITY)),
             ("nudge_min", str(DEFAULT_NUDGE_MIN)),
             ("nudge_max", str(DEFAULT_NUDGE_MAX)),
+            ("nudge_timeout_seconds", str(DEFAULT_NUDGE_TIMEOUT_SECONDS)),
         ],
     )
     db.commit()
@@ -208,6 +211,7 @@ def get_settings():
         "win_probability": float(values.get("win_probability", DEFAULT_WIN_PROBABILITY)),
         "nudge_min": int(values.get("nudge_min", DEFAULT_NUDGE_MIN)),
         "nudge_max": int(values.get("nudge_max", DEFAULT_NUDGE_MAX)),
+        "nudge_timeout_seconds": int(values.get("nudge_timeout_seconds", DEFAULT_NUDGE_TIMEOUT_SECONDS)),
     }
 
 
@@ -359,8 +363,9 @@ def game():
     user = current_user()
     db = get_db()
 
-    # An active nudge opportunity that timed out (NUDGE_TIMEOUT_SECONDS
-    # since it became available) without the player acting on it gets
+    # An active nudge opportunity that timed out (the admin-configured
+    # nudge_timeout_seconds since it became available) without the player
+    # acting on it gets
     # finalized as a loss now, rather than left displayed indefinitely.
     pending_nudge = session.get("nudge_state")
     if pending_nudge and time.time() > pending_nudge["expires_at"]:
@@ -475,7 +480,7 @@ def spin():
                 "reels": list(reels),
                 "reel_indices": nudge_indices,
                 "credits": random.randint(settings["nudge_min"], settings["nudge_max"]),
-                "expires_at": time.time() + NUDGE_TIMEOUT_SECONDS,
+                "expires_at": time.time() + settings["nudge_timeout_seconds"],
             }
 
     return redirect(url_for("game"))
@@ -562,6 +567,7 @@ def admin_panel():
         "admin.html", users=users, admin=current_user(), settings=get_settings(),
         min_wheels=MIN_WHEELS, max_wheels=MAX_WHEELS,
         absolute_nudge_min=ABSOLUTE_NUDGE_MIN, absolute_nudge_max=ABSOLUTE_NUDGE_MAX,
+        absolute_nudge_timeout_min=ABSOLUTE_NUDGE_TIMEOUT_MIN, absolute_nudge_timeout_max=ABSOLUTE_NUDGE_TIMEOUT_MAX,
     )
 
 
@@ -573,8 +579,9 @@ def admin_settings():
         win_probability_pct = float(request.form.get("win_probability_pct", ""))
         nudge_min = int(request.form.get("nudge_min", ""))
         nudge_max = int(request.form.get("nudge_max", ""))
+        nudge_timeout_seconds = int(request.form.get("nudge_timeout_seconds", ""))
     except ValueError:
-        flash("Wheels, win chance, and nudge credits must all be numbers.", "error")
+        flash("Wheels, win chance, nudge credits, and nudge timeout must all be numbers.", "error")
         return redirect(url_for("admin_panel"))
 
     if not (MIN_WHEELS <= num_wheels <= MAX_WHEELS):
@@ -593,15 +600,20 @@ def admin_settings():
         flash("Min nudge credits can't be greater than max.", "error")
         return redirect(url_for("admin_panel"))
 
+    if not (ABSOLUTE_NUDGE_TIMEOUT_MIN <= nudge_timeout_seconds <= ABSOLUTE_NUDGE_TIMEOUT_MAX):
+        flash(f"Nudge timeout must be between {ABSOLUTE_NUDGE_TIMEOUT_MIN} and {ABSOLUTE_NUDGE_TIMEOUT_MAX} seconds.", "error")
+        return redirect(url_for("admin_panel"))
+
     db = get_db()
     db.execute("UPDATE settings SET value = ? WHERE key = 'num_wheels'", (str(num_wheels),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'win_probability'", (str(win_probability),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_min'", (str(nudge_min),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_max'", (str(nudge_max),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_timeout_seconds'", (str(nudge_timeout_seconds),))
     db.commit()
     flash(
         f"Settings updated: {num_wheels} wheels, {win_probability_pct:.0f}% win chance, "
-        f"{nudge_min}-{nudge_max} nudge credits.", "success",
+        f"{nudge_min}-{nudge_max} nudge credits, {nudge_timeout_seconds}s nudge timeout.", "success",
     )
     return redirect(url_for("admin_panel"))
 

@@ -10,7 +10,7 @@
                  data-final="{{ (display_reels or (['❓'] * num_wheels)) | join(',') }}"
                  data-spin="{{ 'true' if should_delay_reveal else 'false' }}"
                  data-symbols="{{ symbols | join(',') }}"
-                 data-nudge-previews="{{ nudge_previews | tojson }}">
+                 data-nudge-previews="{{ nudge_previews | tojson | forceescape }}">
                 {% for i in range(num_wheels) %}
                 <div class="reel-column">
                     <form method="post" action="{{ url_for('nudge', reel_index=i, direction='up') }}">
