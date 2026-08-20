@@ -280,20 +280,20 @@ def spin_reels(num_wheels, win_probability):
             return reels, False, 0
 
 
-def find_nudge_reel(reels):
-    """Returns the index of the single "odd one out" wheel if the rest
-    already match (one wheel away from a full win), else None. Ties (no
-    single majority, e.g. every wheel different) return None -- nudging
-    only makes sense when there's one clear wheel to bump."""
+def find_nudge_reels(reels):
+    """Returns the list of "off" wheel indices whenever at least two
+    wheels already match and it's not already a full win -- every wheel
+    NOT showing the majority symbol becomes independently nudgeable. With
+    exactly 3 wheels this is always a single reel (2 match -> 1 is off),
+    but with 4-5 wheels, 2 matching still leaves 2-3 reels off, and each
+    of those should be nudgeable, not just one. Returns [] if there's no
+    match at all (every wheel different) or it's already a full win."""
     if len(reels) < 3:
-        return None
+        return []
     majority_symbol, majority_count = Counter(reels).most_common(1)[0]
-    if majority_count != len(reels) - 1:
-        return None
-    for i, s in enumerate(reels):
-        if s != majority_symbol:
-            return i
-    return None  # unreachable if majority_count check above passed
+    if majority_count < 2 or majority_count == len(reels):
+        return []
+    return [i for i, s in enumerate(reels) if s != majority_symbol]
 
 
 # --- routes: auth --------------------------------------------------------
@@ -400,20 +400,24 @@ def game():
         (user["tokens"] - last_payout + SPIN_COST) if (last_reels and last_source == "spin") else None
     )
 
+    # nudge_previews maps EVERY currently-nudgeable reel index to its own
+    # up/down preview symbols -- with more than 3 wheels, a near-miss can
+    # leave more than one reel eligible at once (e.g. 2 of 5 wheels match,
+    # leaving 3 off), and each of those needs its own preview, not just a
+    # single reel's.
     nudge_state = session.get("nudge_state")
-    nudge_preview = None
+    nudge_previews = {}
+    nudge_credits = None
+    nudge_seconds_remaining = None
     if nudge_state:
-        idx = nudge_state["reel_index"]
-        cur_symbol = nudge_state["reels"][idx]
-        pos = SYMBOLS.index(cur_symbol)
-        nudge_preview = {
-            "reel_index": idx,
-            "current": cur_symbol,
-            "up": SYMBOLS[(pos + 1) % len(SYMBOLS)],
-            "down": SYMBOLS[(pos - 1) % len(SYMBOLS)],
-            "credits": nudge_state["credits"],
-            "seconds_remaining": max(0, int(nudge_state["expires_at"] - time.time())),
-        }
+        for idx in nudge_state["reel_indices"]:
+            pos = SYMBOLS.index(nudge_state["reels"][idx])
+            nudge_previews[idx] = {
+                "up": SYMBOLS[(pos + 1) % len(SYMBOLS)],
+                "down": SYMBOLS[(pos - 1) % len(SYMBOLS)],
+            }
+        nudge_credits = nudge_state["credits"]
+        nudge_seconds_remaining = max(0, int(nudge_state["expires_at"] - time.time()))
 
     return render_template(
         "game.html", user=user, leaderboard=leaderboard,
@@ -422,7 +426,9 @@ def game():
         symbols=SYMBOLS, num_wheels=settings["num_wheels"],
         tokens_before_spin=tokens_before_spin,
         should_delay_reveal=(last_source == "spin"),
-        nudge_preview=nudge_preview,
+        nudge_previews=nudge_previews,
+        nudge_credits=nudge_credits,
+        nudge_seconds_remaining=nudge_seconds_remaining,
         nudge_reels=(nudge_state["reels"] if nudge_state else None),
     )
 
@@ -463,11 +469,11 @@ def spin():
     # previous near-miss that the player never acted on.
     session.pop("nudge_state", None)
     if not win and settings["nudge_max"] > 0:
-        nudge_idx = find_nudge_reel(reels)
-        if nudge_idx is not None:
+        nudge_indices = find_nudge_reels(reels)
+        if nudge_indices:
             session["nudge_state"] = {
                 "reels": list(reels),
-                "reel_index": nudge_idx,
+                "reel_indices": nudge_indices,
                 "credits": random.randint(settings["nudge_min"], settings["nudge_max"]),
                 "expires_at": time.time() + NUDGE_TIMEOUT_SECONDS,
             }
@@ -475,9 +481,9 @@ def spin():
     return redirect(url_for("game"))
 
 
-@app.route("/nudge/<direction>", methods=["POST"])
+@app.route("/nudge/<int:reel_index>/<direction>", methods=["POST"])
 @login_required
-def nudge(direction):
+def nudge(reel_index, direction):
     if direction not in ("up", "down"):
         flash("Invalid nudge direction.", "error")
         return redirect(url_for("game"))
@@ -485,6 +491,10 @@ def nudge(direction):
     nudge_state = session.get("nudge_state")
     if not nudge_state or nudge_state["credits"] <= 0:
         flash("No nudges available.", "error")
+        return redirect(url_for("game"))
+
+    if reel_index not in nudge_state["reel_indices"]:
+        flash("That wheel isn't nudgeable.", "error")
         return redirect(url_for("game"))
 
     if time.time() > nudge_state["expires_at"]:
@@ -498,11 +508,10 @@ def nudge(direction):
     db = get_db()
 
     reels = nudge_state["reels"]
-    idx = nudge_state["reel_index"]
-    pos = SYMBOLS.index(reels[idx])
+    pos = SYMBOLS.index(reels[reel_index])
     # Free (no token cost) -- fixed reel order, wraps around at the ends.
     new_pos = (pos + 1) % len(SYMBOLS) if direction == "up" else (pos - 1) % len(SYMBOLS)
-    reels[idx] = SYMBOLS[new_pos]
+    reels[reel_index] = SYMBOLS[new_pos]
     nudge_state["credits"] -= 1
 
     full_win = len(set(reels)) == 1
@@ -525,7 +534,19 @@ def nudge(direction):
     elif nudge_state["credits"] <= 0:
         finalize_nudge_as_loss(nudge_state)
     else:
-        session["nudge_state"] = nudge_state
+        # Recompute which wheels are still nudgeable -- the wheel just
+        # nudged might now match a different, larger group than before.
+        # In practice the original majority can only stay the same size
+        # or grow (nudging never touches wheels already in it), so this
+        # can't actually go empty short of a full win (already handled
+        # above), but recomputing rather than reusing the original
+        # indices keeps this correct rather than assumed.
+        still_nudgeable = find_nudge_reels(reels)
+        if still_nudgeable:
+            nudge_state["reel_indices"] = still_nudgeable
+            session["nudge_state"] = nudge_state
+        else:
+            finalize_nudge_as_loss(nudge_state)
 
     return redirect(url_for("game"))
 

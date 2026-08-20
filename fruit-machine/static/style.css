@@ -156,6 +156,23 @@ body {
     justify-content: center;
     overflow: hidden;
     box-shadow: inset 0 0 10px rgba(0,0,0,0.4);
+    position: relative;
+}
+/* Classic fruit-machine payline: a thin line across the middle of each
+   reel window, marking the "live" row. Anchored to the reel itself
+   (not the whole column, which now also includes the nudge buttons
+   above/below) so it's always exactly centered regardless of button
+   sizing. */
+.reel::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    background: rgba(0, 0, 0, 0.6);
+    transform: translateY(-50%);
+    pointer-events: none;
 }
 .reel-symbol { font-size: 3rem; line-height: 1; }
 .reel.spinning .reel-symbol { animation: spin-blur 0.1s linear infinite; }

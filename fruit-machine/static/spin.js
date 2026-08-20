@@ -63,21 +63,25 @@
             const countdownTimer = setInterval(tick, 1000);
         }
 
-        const nudgeReelIndex = reelsEl.dataset.nudgeReel;
-        if (nudgeReelIndex !== "") {
-            const upBtn = reelsEl.querySelector('.nudge-up[data-reel-index="' + nudgeReelIndex + '"]');
-            const downBtn = reelsEl.querySelector('.nudge-down[data-reel-index="' + nudgeReelIndex + '"]');
+        // With more than 3 wheels, a near-miss can leave more than one
+        // reel eligible at once (e.g. 2 of 5 wheels match, leaving 3
+        // off) -- activate every reel index present in the preview map,
+        // not just one.
+        const previews = JSON.parse(reelsEl.dataset.nudgePreviews || "{}");
+        Object.keys(previews).forEach((reelIndex) => {
+            const upBtn = reelsEl.querySelector('.nudge-up[data-reel-index="' + reelIndex + '"]');
+            const downBtn = reelsEl.querySelector('.nudge-down[data-reel-index="' + reelIndex + '"]');
             if (upBtn) {
                 upBtn.disabled = false;
                 upBtn.classList.add("nudge-active");
-                upBtn.innerHTML = "&#9650; " + reelsEl.dataset.nudgeUp;
+                upBtn.innerHTML = "&#9650; " + previews[reelIndex].up;
             }
             if (downBtn) {
                 downBtn.disabled = false;
                 downBtn.classList.add("nudge-active");
-                downBtn.innerHTML = "&#9660; " + reelsEl.dataset.nudgeDown;
+                downBtn.innerHTML = "&#9660; " + previews[reelIndex].down;
             }
-        }
+        });
     }
 
     if (!shouldSpin) {

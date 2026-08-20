@@ -10,24 +10,19 @@
                  data-final="{{ (display_reels or (['❓'] * num_wheels)) | join(',') }}"
                  data-spin="{{ 'true' if should_delay_reveal else 'false' }}"
                  data-symbols="{{ symbols | join(',') }}"
-                 data-nudge-reel="{{ nudge_preview['reel_index'] if nudge_preview is not none else '' }}"
-                 data-nudge-up="{{ nudge_preview['up'] if nudge_preview else '' }}"
-                 data-nudge-down="{{ nudge_preview['down'] if nudge_preview else '' }}">
+                 data-nudge-previews="{{ nudge_previews | tojson }}">
                 {% for i in range(num_wheels) %}
                 <div class="reel-column">
-                    <button type="submit" form="nudge-up-form" class="nudge-btn nudge-up" data-reel-index="{{ i }}" disabled>&#9650;</button>
+                    <form method="post" action="{{ url_for('nudge', reel_index=i, direction='up') }}">
+                        <button type="submit" class="nudge-btn nudge-up" data-reel-index="{{ i }}" disabled>&#9650;</button>
+                    </form>
                     <div class="reel"><span class="reel-symbol">❓</span></div>
-                    <button type="submit" form="nudge-down-form" class="nudge-btn nudge-down" data-reel-index="{{ i }}" disabled>&#9660;</button>
+                    <form method="post" action="{{ url_for('nudge', reel_index=i, direction='down') }}">
+                        <button type="submit" class="nudge-btn nudge-down" data-reel-index="{{ i }}" disabled>&#9660;</button>
+                    </form>
                 </div>
                 {% endfor %}
             </div>
-            <!-- One shared form per direction rather than one per reel-button: the
-                 server already knows which reel is nudgeable from session state
-                 (nudge_state), so the button clicked doesn't need to say which
-                 reel -- only every OTHER button stays disabled, so only the
-                 eligible one can actually submit either form. -->
-            <form method="post" action="{{ url_for('nudge', direction='up') }}" id="nudge-up-form"></form>
-            <form method="post" action="{{ url_for('nudge', direction='down') }}" id="nudge-down-form"></form>
 
             {% if last_reels %}
                 {% set result_hidden = 'visibility: hidden;' if should_delay_reveal else '' %}
@@ -38,12 +33,12 @@
                 {% endif %}
             {% endif %}
 
-            {% if nudge_preview %}
+            {% if nudge_previews %}
                 <div class="nudge-credits-indicator" id="nudge-credits-indicator"
                      style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}"
-                     data-seconds="{{ nudge_preview['seconds_remaining'] }}">
-                    So close! Nudge wheel {{ nudge_preview['reel_index'] + 1 }} &mdash; {{ nudge_preview['credits'] }} nudge{{ '' if nudge_preview['credits'] == 1 else 's' }} left
-                    (<span id="nudge-countdown">{{ nudge_preview['seconds_remaining'] }}</span>s)
+                     data-seconds="{{ nudge_seconds_remaining }}">
+                    So close! {{ nudge_credits }} nudge{{ '' if nudge_credits == 1 else 's' }} left
+                    (<span id="nudge-countdown">{{ nudge_seconds_remaining }}</span>s)
                 </div>
             {% endif %}
 
