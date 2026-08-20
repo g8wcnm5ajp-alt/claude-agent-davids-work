@@ -21,6 +21,6 @@ COPY static/ static/
 ENV FRUIT_MACHINE_DB=/data/fruit_machine.db
 VOLUME /data
 
-EXPOSE 5000
+EXPOSE 5000 5001
 
 CMD ["./entrypoint.sh"]

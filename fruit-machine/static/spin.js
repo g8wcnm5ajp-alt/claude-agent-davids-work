@@ -17,7 +17,10 @@
 
     const spinDurationMs = 900;
     const tickMs = 80;
-    const stopDelays = [spinDurationMs, spinDurationMs + 300, spinDurationMs + 600];
+    const stopStaggerMs = 300;
+    // Generalized for any number of wheels (3-5, admin-configurable) --
+    // each wheel stops stopStaggerMs after the previous one.
+    const stopDelays = Array.from(reelEls, (_, i) => spinDurationMs + i * stopStaggerMs);
 
     reelEls.forEach((reel, i) => {
         const symbolEl = reel.querySelector(".reel-symbol");

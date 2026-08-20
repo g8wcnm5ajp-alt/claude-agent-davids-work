@@ -43,6 +43,22 @@
 </div>
 
 <div class="card">
+    <h2>Machine Settings</h2>
+    <form method="post" action="{{ url_for('admin_settings') }}" class="inline-form">
+        <label>Wheels
+            <input type="number" name="num_wheels" min="{{ min_wheels }}" max="{{ max_wheels }}"
+                   value="{{ settings['num_wheels'] }}" required>
+        </label>
+        <label>Win chance %
+            <input type="number" name="win_probability_pct" min="1" max="99" step="1"
+                   value="{{ (settings['win_probability'] * 100) | round(0, 'floor') | int }}" required>
+        </label>
+        <button type="submit" class="btn btn-gold">Update Settings</button>
+    </form>
+    <p class="hint">Wheels: 3-5. Win chance is the overall odds any spin wins something (payout tier is still weighted separately, cherries stay rarest).</p>
+</div>
+
+<div class="card">
     <h2>Change Admin Password</h2>
     <form method="post" action="{{ url_for('admin_change_password') }}" class="inline-form">
         <input type="password" name="new_password" placeholder="New password (min 8 chars)" minlength="8" required>

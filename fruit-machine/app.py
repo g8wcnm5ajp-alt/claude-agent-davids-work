@@ -6,8 +6,9 @@ Built from the design note at 06 - Personal/Fruit-Machine-Fun-Project/
 Build a fun simulation fruit machine..md.
 
 Flask + sqlite3 (stdlib), no ORM. Session-based auth via Flask's signed
-cookies. All game odds live in one place (WIN_PROBABILITY / SYMBOL_WEIGHTS
-/ PAYOUTS below) so the house edge is easy to see and tune.
+cookies. Wheel count and win probability are admin-adjustable at runtime
+(the `settings` table / get_settings()); per-symbol rarity and payouts
+(SYMBOL_WEIGHTS / PAYOUTS below) are still fixed constants.
 """
 
 import os
@@ -37,8 +38,14 @@ DEFAULT_ADMIN_PASSWORD = os.environ.get("FRUIT_MACHINE_ADMIN_PASSWORD", "fruit-a
 #      near-miss, never an accidental match.
 #
 # Requested odds: "weighted 8:2 in favour of the fruit machine" -- read as
-# an overall ~80/20 house edge: about 1 spin in 5 wins something.
-WIN_PROBABILITY = 0.20
+# an overall ~80/20 house edge: about 1 spin in 5 wins something. This is
+# now the *default* -- both this and the number of wheels are admin-
+# adjustable at runtime (see the `settings` table / get_settings() below),
+# not fixed constants.
+DEFAULT_WIN_PROBABILITY = 0.20
+DEFAULT_NUM_WHEELS = 3
+MIN_WHEELS, MAX_WHEELS = 3, 5
+MIN_WIN_PROBABILITY, MAX_WIN_PROBABILITY = 0.01, 0.99
 
 SYMBOLS = ["\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣"]
 # cherry, lemon, orange, grapes, apple, bell, seven
@@ -153,6 +160,31 @@ def init_db():
     )
     db.commit()
 
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    db.commit()
+    # Same INSERT OR IGNORE rationale as the admin user above -- multiple
+    # gunicorn workers each call init_db() independently on startup.
+    db.executemany(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+        [("num_wheels", str(DEFAULT_NUM_WHEELS)), ("win_probability", str(DEFAULT_WIN_PROBABILITY))],
+    )
+    db.commit()
+
+
+def get_settings():
+    """Admin-adjustable game settings, read fresh from the DB on every
+    call rather than cached -- request volume here is low enough (a fun
+    project, not a high-traffic service) that the simplicity of "always
+    current" outweighs any benefit from caching."""
+    rows = get_db().execute("SELECT key, value FROM settings").fetchall()
+    values = {row["key"]: row["value"] for row in rows}
+    return {
+        "num_wheels": int(values.get("num_wheels", DEFAULT_NUM_WHEELS)),
+        "win_probability": float(values.get("win_probability", DEFAULT_WIN_PROBABILITY)),
+    }
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -189,19 +221,24 @@ def admin_required(view):
 
 
 # --- game logic ------------------------------------------------------------
-def spin_reels():
-    """Returns (list of 3 symbols, win, payout)."""
-    if random.random() < WIN_PROBABILITY:
+def spin_reels(num_wheels, win_probability):
+    """Returns (list of num_wheels symbols, win, payout). A win is still
+    ALL wheels matching (generalized from the original fixed-3-wheel
+    "row of three" rule) -- more wheels only changes the visual
+    spectacle of a win, not the actual odds, since win/lose is decided by
+    the win_probability gate below, not by independently-random wheels
+    happening to agree."""
+    if random.random() < win_probability:
         symbols = list(SYMBOL_WEIGHTS.keys())
         weights = list(SYMBOL_WEIGHTS.values())
         winning_symbol = random.choices(symbols, weights=weights, k=1)[0]
-        return [winning_symbol] * 3, True, PAYOUTS[winning_symbol]
+        return [winning_symbol] * num_wheels, True, PAYOUTS[winning_symbol]
 
-    # Deliberately not a triple -- retry until the three reels differ from
-    # a real 3-of-a-kind, so a losing spin is a genuine near-miss rather
+    # Deliberately not an all-match -- retry until the wheels differ from
+    # a real all-of-a-kind, so a losing spin is a genuine near-miss rather
     # than an accidental match slipping through.
     while True:
-        reels = [random.choice(SYMBOLS) for _ in range(3)]
+        reels = [random.choice(SYMBOLS) for _ in range(num_wheels)]
         if len(set(reels)) > 1:
             return reels, False, 0
 
@@ -280,12 +317,13 @@ def game():
     last_reels = session.pop("last_reels", None)
     last_win = session.pop("last_win", None)
     last_payout = session.pop("last_payout", None)
+    settings = get_settings()
 
     return render_template(
         "game.html", user=user, leaderboard=leaderboard,
         house_spent=totals["spent"], house_won=totals["won"], house_net=house_net,
         last_reels=last_reels, last_win=last_win, last_payout=last_payout,
-        symbols=SYMBOLS,
+        symbols=SYMBOLS, num_wheels=settings["num_wheels"],
     )
 
 
@@ -294,8 +332,9 @@ def game():
 def spin():
     user = current_user()
     db = get_db()
+    settings = get_settings()
 
-    reels, win, payout = spin_reels()
+    reels, win, payout = spin_reels(settings["num_wheels"], settings["win_probability"])
 
     # Atomic, race-safe update computed entirely in SQL relative to the
     # row's CURRENT value at write time (tokens = tokens - cost + payout),
@@ -328,7 +367,37 @@ def admin_panel():
     users = get_db().execute(
         "SELECT * FROM users WHERE is_admin = 0 ORDER BY username"
     ).fetchall()
-    return render_template("admin.html", users=users, admin=current_user())
+    return render_template(
+        "admin.html", users=users, admin=current_user(), settings=get_settings(),
+        min_wheels=MIN_WHEELS, max_wheels=MAX_WHEELS,
+    )
+
+
+@app.route("/admin/settings", methods=["POST"])
+@admin_required
+def admin_settings():
+    try:
+        num_wheels = int(request.form.get("num_wheels", ""))
+        win_probability_pct = float(request.form.get("win_probability_pct", ""))
+    except ValueError:
+        flash("Wheels and win chance must be numbers.", "error")
+        return redirect(url_for("admin_panel"))
+
+    if not (MIN_WHEELS <= num_wheels <= MAX_WHEELS):
+        flash(f"Number of wheels must be between {MIN_WHEELS} and {MAX_WHEELS}.", "error")
+        return redirect(url_for("admin_panel"))
+
+    win_probability = win_probability_pct / 100.0
+    if not (MIN_WIN_PROBABILITY <= win_probability <= MAX_WIN_PROBABILITY):
+        flash(f"Win chance must be between {MIN_WIN_PROBABILITY*100:.0f}% and {MAX_WIN_PROBABILITY*100:.0f}%.", "error")
+        return redirect(url_for("admin_panel"))
+
+    db = get_db()
+    db.execute("UPDATE settings SET value = ? WHERE key = 'num_wheels'", (str(num_wheels),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'win_probability'", (str(win_probability),))
+    db.commit()
+    flash(f"Settings updated: {num_wheels} wheels, {win_probability_pct:.0f}% win chance.", "success")
+    return redirect(url_for("admin_panel"))
 
 
 @app.route("/admin/reset/<int:user_id>", methods=["POST"])

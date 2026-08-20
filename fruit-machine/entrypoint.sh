@@ -27,4 +27,13 @@ if [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
     chmod 600 "$KEY"
 fi
 
-exec gunicorn --bind 0.0.0.0:5000 --certfile="$CERT" --keyfile="$KEY" --workers 2 app:app
+# Two gunicorn processes in one container: plain HTTP on 5000
+# (backgrounded) and HTTPS on 5001 (foreground/exec'd, so it becomes PID 1
+# and receives signals for graceful container shutdown). Gunicorn itself
+# has no CLI option to serve one plaintext bind and one TLS bind from a
+# single instance -- --certfile/--keyfile apply to every socket it binds.
+# The backgrounded HTTP process isn't orphaned on `docker stop`: Docker
+# kills every process in the container's namespace on teardown, not just
+# PID 1.
+gunicorn --bind 0.0.0.0:5000 --workers 2 app:app &
+exec gunicorn --bind 0.0.0.0:5001 --certfile="$CERT" --keyfile="$KEY" --workers 2 app:app
