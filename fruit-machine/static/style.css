@@ -351,32 +351,19 @@ body {
 .roulette-red { background: var(--error); }
 .roulette-black { background: #1a1a1a; border: 1px solid rgba(234, 246, 255, 0.3); }
 .roulette-green { background: #2e7d32; }
+/* Table Layout lives in the sidebar (.roulette-wheel-ref is a .card
+   there, below Last Round) -- narrower than the main panel, so fewer
+   columns and smaller cells than a full-width grid would use. */
 .roulette-grid {
     display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 0.25rem;
     justify-items: center;
 }
+.roulette-wheel-ref .roulette-number { width: 24px; height: 24px; font-size: 0.75rem; }
 .roulette-bet-list { list-style: none; padding: 0; margin: 0.5rem 0; }
 .roulette-bet-list li { padding: 0.25rem 0; border-bottom: 1px solid rgba(41, 182, 246, 0.15); }
 .roulette-bet-form select { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--panel-light); color: var(--bg); }
-
-/* Bet selection and the number-layout reference sit side by side (David
-   asked for the layout to move next to the bet form, not below the
-   whole cabinet) -- wraps to stacked on narrow viewports since this
-   lives inside the already-responsive .game-layout. */
-.roulette-bet-row {
-    display: flex;
-    gap: 1.5rem;
-    align-items: flex-start;
-    flex-wrap: wrap;
-}
-.roulette-bet-row .roulette-bet-form { flex: 1 1 auto; }
-.roulette-bet-row .roulette-wheel-ref {
-    flex: 0 0 auto;
-    width: 260px;
-    margin-top: 0;
-}
 
 /* --- game-select landing page --- */
 .play-select { text-align: center; max-width: 700px; margin: 2rem auto; }

@@ -96,28 +96,65 @@ DEFAULT_ICON_OWNER_PENALTY = 5
 MIN_ICON_CHANCE_PCT, MAX_ICON_CHANCE_PCT = 0.0, 100.0
 ABSOLUTE_ICON_AMOUNT_MIN, ABSOLUTE_ICON_AMOUNT_MAX = 0, 500
 
-SYMBOLS = ["\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣"]
-# cherry, lemon, orange, grapes, apple, bell, seven
+SYMBOLS = [
+    "\U0001F352", "\U0001F34B", "\U0001F34A", "\U0001F347", "\U0001F34E", "\U0001F514", "7️⃣",
+    "\U0001F34D", "\U0001F34C", "\U0001F353", "\U0001FAD0",
+    "\U0001F967", "\U0001F969", "\U0001F32D",
+]
+# cherry, lemon, orange, grapes, apple, bell, seven,
+# pineapple, banana, strawberries, raspberries(*),
+# pork pie(*), steak pie(*), hot dog
+#
+# (*) Unicode has no dedicated glyph for raspberries or for either kind of
+# pie, so these three are substitutes, not exact matches: raspberries use
+# U+1FAD0 BLUEBERRIES (the closest "berry cluster" glyph available); pork
+# pie and steak pie both use generic food glyphs (U+1F967 PIE and U+1F969
+# CUT OF MEAT respectively) chosen to at least look distinct from each
+# other on the reel, not because either literally depicts the requested
+# dish. Hot dog (U+1F32D) is an exact match.
+SYMBOLS_NEEDING_SUBSTITUTES = {
+    "\U0001FAD0": "raspberries (no dedicated emoji exists -- using blueberries)",
+    "\U0001F967": "pork pie (no dedicated emoji exists -- using generic pie)",
+    "\U0001F969": "steak pie (no dedicated emoji exists -- using cut of meat, to look distinct from the pie above)",
+}
 
 # Weight of each symbol WHEN a spin has already been decided to win --
-# cherries (the top prize, per the design note's "top prize" line) are the
-# rarest; the seven and bell are mid-tier; the plain fruits are the most
-# common small win.
+# cherries were the original top prize (50), but pork pie now pays out
+# even bigger (400, David's explicit call) and needs to be correspondingly
+# rarer than cherry, not just placed in the existing rare tier -- its own
+# near-jackpot tier, well below every other symbol's weight. Steak pie and
+# the other new fruits weren't singled out the same way, so they stay at
+# the tiers already reasoned through below (steak pie mid-tier like bell,
+# new fruits in the common tier, hot dog also common -- a judgement call
+# where the request didn't specify a tier, not a guess presented as fact).
 SYMBOL_WEIGHTS = {
+    "\U0001F967": 1,    # pork pie -- rarer than everything else, matches its 400-token payout
     "\U0001F352": 5,    # cherry -- jackpot, rare
     "7️⃣": 10,  # seven
     "\U0001F514": 15,   # bell
+    "\U0001F969": 15,   # steak pie
     "\U0001F34B": 17.5,  # lemon
     "\U0001F34A": 17.5,  # orange
     "\U0001F347": 17.5,  # grapes
     "\U0001F34E": 17.5,  # apple
+    "\U0001F34D": 17.5,  # pineapple
+    "\U0001F34C": 17.5,  # banana
+    "\U0001F353": 17.5,  # strawberries
+    "\U0001FAD0": 17.5,  # raspberries
+    "\U0001F32D": 17.5,  # hot dog -- a snack, not a "plain fruit," but no
+                          # stronger case for a rarer tier than any other
+                          # new symbol, so it shares the common tier too
 }
 
 PAYOUTS = {
+    "\U0001F967": 400,  # pork pie -- David's explicit call, well above cherry
     "\U0001F352": 50,   # cherry -- top prize
     "7️⃣": 30,  # seven
     "\U0001F514": 20,   # bell
+    "\U0001F969": 20,   # steak pie
     "\U0001F34B": 10, "\U0001F34A": 10, "\U0001F347": 10, "\U0001F34E": 10,
+    "\U0001F34D": 10, "\U0001F34C": 10, "\U0001F353": 10, "\U0001FAD0": 10,
+    "\U0001F32D": 10,
 }
 
 def get_or_create_secret_key():
