@@ -389,3 +389,88 @@ body {
 .play-select-card:hover { transform: translateY(-3px); }
 .play-select-icon { font-size: 3rem; }
 .play-select-title { font-size: 1.3rem; font-weight: bold; color: var(--accent-light); }
+
+/* --- roulette: player roster --- */
+.roulette-roster { list-style: none; padding: 0; margin: 0.5rem 0; }
+.roulette-roster li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid rgba(41, 182, 246, 0.15); }
+.roster-waiting { opacity: 0.75; }
+
+/* --- roulette: spin animation ---
+   Sequence (see roulette.js): the betting area slides down and fades
+   out ("rolls downward"), the wheel scene fades/scales in and spins to
+   the winning number, then zooms in on the result before the betting
+   area returns. Only plays once per browser session per resolved round
+   -- see should_animate_spin in roulette.py. */
+.roulette-betting-area {
+    transition: transform 0.6s ease-in, opacity 0.6s ease-in;
+}
+.roulette-betting-area.rolling-away {
+    transform: translateY(120%);
+    opacity: 0;
+}
+
+.roulette-wheel-scene {
+    display: none;
+    position: relative;
+    width: 300px;
+    height: 300px;
+    margin: 1rem auto;
+    align-items: center;
+    justify-content: center;
+    transition: transform 1.2s ease-in-out;
+}
+.roulette-wheel-scene.showing { display: flex; }
+.roulette-wheel-scene.zoomed { transform: scale(1.8); }
+
+.roulette-wheel-pointer {
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 1.5rem;
+    color: var(--accent-light);
+    z-index: 2;
+    filter: drop-shadow(0 0 4px rgba(0,0,0,0.6));
+}
+.roulette-wheel {
+    width: 270px;
+    height: 270px;
+    border-radius: 50%;
+    border: 6px solid var(--accent);
+    position: relative;
+    box-shadow: 0 0 30px rgba(0,0,0,0.5);
+    transition: transform 4s cubic-bezier(0.15, 0.85, 0.25, 1);
+}
+.wheel-label {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+}
+.wheel-label-text {
+    position: absolute;
+    left: -10px;
+    top: -8px;
+    width: 20px;
+    text-align: center;
+    font-size: 0.65rem;
+    font-weight: bold;
+    color: #fff;
+    text-shadow: 0 0 2px rgba(0,0,0,0.9);
+}
+.roulette-wheel-result {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.4rem;
+    font-weight: bold;
+    color: #fff;
+    text-shadow: 0 0 8px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.9);
+}
+.roulette-wheel-scene.zoomed .roulette-wheel-result { display: flex; }
+.roulette-wheel-result-red { color: #ff6b5b; }
+.roulette-wheel-result-black { color: #cfd8dc; }
+.roulette-wheel-result-green { color: #6fcf97; }

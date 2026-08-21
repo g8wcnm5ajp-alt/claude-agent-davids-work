@@ -32,3 +32,68 @@
     typeEl.addEventListener("change", rebuild);
     rebuild();
 })();
+
+// Spin animation: table rolls down and out, the wheel appears and spins,
+// then zooms in on the winning number. All purely cosmetic -- the result
+// was already decided server-side in roulette.py's /spin before this
+// page even loaded (see data-winning-number/data-target-rotation on
+// #roulette-stage); this never influences the outcome, same principle
+// as the fruit machine's spin.js. Plays at most once per browser session
+// per resolved round (see should_animate_spin in roulette.py) so a page
+// reload doesn't replay it endlessly.
+(function () {
+    const stage = document.getElementById("roulette-stage");
+    if (!stage || stage.dataset.shouldAnimate !== "true") return;
+
+    const bettingArea = document.getElementById("roulette-betting-area");
+    const wheelScene = document.getElementById("roulette-wheel-scene");
+    const wheel = document.getElementById("roulette-wheel");
+    const resultEl = document.getElementById("roulette-wheel-result");
+    // Both of these are rendered server-side with the real winning number
+    // already in them (the "Last spin" banner in the betting area, and
+    // the sidebar's "Last Round" card) -- kept visibility:hidden by the
+    // template until the spin animation actually finishes, same reveal-
+    // timing principle as the fruit machine, so neither spoils the wheel
+    // before it stops.
+    const lastSpinBanner = document.getElementById("roulette-last-spin-banner");
+    const lastRoundCard = document.getElementById("roulette-last-round-card");
+    if (!bettingArea || !wheelScene || !wheel || !resultEl) return;
+
+    const targetRotation = parseFloat(stage.dataset.targetRotation || "0");
+    const winningNumber = stage.dataset.winningNumber;
+    const winningColor = stage.dataset.winningColor;
+
+    const ROLL_AWAY_MS = 650;
+    const SPIN_MS = 4000;
+    const ZOOM_MS = 1200;
+    const RESULT_HOLD_MS = 3500;
+
+    setTimeout(() => {
+        bettingArea.classList.add("rolling-away");
+    }, 100);
+
+    setTimeout(() => {
+        bettingArea.style.display = "none";
+        wheelScene.classList.add("showing");
+        // Force a reflow so the browser registers the wheel's starting
+        // (unrotated) state before the transition below kicks in --
+        // otherwise the very first spin can sometimes jump straight to
+        // the end angle instead of animating through it.
+        void wheel.offsetWidth;
+        wheel.style.transform = "rotate(" + targetRotation + "deg)";
+    }, ROLL_AWAY_MS);
+
+    setTimeout(() => {
+        wheelScene.classList.add("zoomed");
+        resultEl.textContent = winningNumber;
+        resultEl.className = "roulette-wheel-result roulette-wheel-result-" + winningColor;
+        if (lastSpinBanner) lastSpinBanner.style.visibility = "visible";
+        if (lastRoundCard) lastRoundCard.style.visibility = "visible";
+    }, ROLL_AWAY_MS + SPIN_MS);
+
+    setTimeout(() => {
+        wheelScene.classList.remove("zoomed", "showing");
+        bettingArea.style.display = "";
+        bettingArea.classList.remove("rolling-away");
+    }, ROLL_AWAY_MS + SPIN_MS + ZOOM_MS + RESULT_HOLD_MS);
+})();

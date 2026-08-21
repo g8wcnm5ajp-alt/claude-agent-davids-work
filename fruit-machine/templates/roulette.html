@@ -6,78 +6,118 @@
         <div class="cabinet roulette-cabinet">
             <div class="cabinet-top">EUROPEAN ROULETTE</div>
 
-            {% if last_round and last_round['winning_number'] is not none %}
-                <div class="result result-win roulette-last-result">
-                    Last spin: <span class="roulette-number roulette-{{ number_color(last_round['winning_number']) }}">{{ last_round['winning_number'] }}</span>
-                    ({{ number_color(last_round['winning_number']) }})
-                </div>
-            {% endif %}
+            <div id="roulette-stage"
+                 data-should-animate="{{ 'true' if should_animate_spin else 'false' }}"
+                 data-target-rotation="{{ wheel_target_rotation }}"
+                 data-winning-number="{{ last_round['winning_number'] if last_round else '' }}"
+                 data-winning-color="{{ number_color(last_round['winning_number']) if last_round else '' }}">
 
-            {% if not open_round %}
-                <p class="hint">No round is open. {% if is_banker %}Open one to start taking bets.{% else %}Waiting for the Banker to open a round.{% endif %}</p>
-                {% if is_banker %}
-                    <form method="post" action="{{ url_for('roulette.new_round') }}">
-                        <button type="submit" class="btn btn-gold">OPEN NEW ROUND</button>
-                    </form>
-                {% endif %}
-            {% else %}
-                <p class="hint">Round #{{ open_round['id'] }} is open for betting.</p>
-
-                <form method="post" action="{{ url_for('roulette.place_bet') }}" class="inline-form roulette-bet-form">
-                    <label>Bet type
-                        <select name="bet_type" id="bet-type">
-                            <option value="straight">Straight (single number)</option>
-                            <option value="color">Red / Black</option>
-                            <option value="parity">Odd / Even</option>
-                            <option value="range">Low (1-18) / High (19-36)</option>
-                            <option value="dozen">Dozen</option>
-                            <option value="column">Column</option>
-                        </select>
-                    </label>
-                    <label>Value
-                        <select name="bet_value" id="bet-value">
-                            {% for n in numbers %}
-                                <option value="{{ n }}">{{ n }}</option>
-                            {% endfor %}
-                        </select>
-                    </label>
-                    <label>Amount
-                        <input type="number" name="amount" min="1" value="{{ [user['tokens'], 10] | min }}" max="{{ user['tokens'] }}" required>
-                    </label>
-                    <button type="submit" class="btn btn-gold" {% if user['tokens'] < 1 %}disabled{% endif %}>PLACE BET</button>
-                </form>
-                <p class="hint">Payouts: straight 35:1, dozen/column 2:1, red-black/odd-even/low-high 1:1 (stake returned too). The Value list changes to match whichever bet type you pick.</p>
-
-                {% if is_banker %}
-                    <form method="post" action="{{ url_for('roulette.spin') }}">
-                        <button type="submit" class="btn btn-gold btn-spin" {% if not bets %}disabled{% endif %}>SPIN ROULETTE</button>
-                    </form>
-                    {% if not bets %}<p class="hint">Waiting for at least one bet before you can spin.</p>{% endif %}
-                {% else %}
-                    <p class="hint">Only the Banker (David) can spin once bets are in.</p>
-                {% endif %}
-
-                <h3>Bets on the table</h3>
-                {% if bets %}
-                    <ul class="roulette-bet-list">
-                        {% for b in bets %}
-                            <li>
-                                <strong>{{ b['username'] }}</strong> --
-                                {{ b['amount'] }} on
-                                {% if b['bet_type'] == 'straight' %}{{ b['bet_value'] }}
-                                {% elif b['bet_type'] == 'dozen' %}dozen {{ b['bet_value']|int + 1 }}
-                                {% elif b['bet_type'] == 'column' %}column {{ b['bet_value']|int + 1 }}
-                                {% else %}{{ b['bet_value'] }}{% endif %}
-                                ({{ b['bet_type'] }})
-                            </li>
+                <div class="roulette-wheel-scene" id="roulette-wheel-scene">
+                    <div class="roulette-wheel-pointer">&#9660;</div>
+                    <div class="roulette-wheel" id="roulette-wheel" style="background: {{ wheel_conic_gradient }};">
+                        {% for label in wheel_labels %}
+                            <div class="wheel-label" style="transform: rotate({{ label.angle }}deg) translateY(-135px);">
+                                <span class="wheel-label-text wheel-label-{{ label.color }}" style="transform: rotate({{ label.counter_angle }}deg);">{{ label.number }}</span>
+                            </div>
                         {% endfor %}
-                    </ul>
-                {% else %}
-                    <p class="hint">No bets yet.</p>
-                {% endif %}
-            {% endif %}
+                    </div>
+                    <div class="roulette-wheel-result" id="roulette-wheel-result"></div>
+                </div>
 
-            <div class="token-count">Tokens: <strong>{{ user['tokens'] }}</strong></div>
+                <div class="roulette-betting-area" id="roulette-betting-area">
+                    {% if last_round and last_round['winning_number'] is not none %}
+                        <div class="result result-win roulette-last-result" id="roulette-last-spin-banner"
+                             style="{{ 'visibility: hidden;' if should_animate_spin else '' }}">
+                            Last spin: <span class="roulette-number roulette-{{ number_color(last_round['winning_number']) }}">{{ last_round['winning_number'] }}</span>
+                            ({{ number_color(last_round['winning_number']) }})
+                        </div>
+                    {% endif %}
+
+                    {% if not open_round %}
+                        <p class="hint">No round is open. {% if is_banker %}Open one to start taking bets.{% else %}Waiting for the Banker to open a round.{% endif %}</p>
+                        {% if is_banker %}
+                            <form method="post" action="{{ url_for('roulette.new_round') }}">
+                                <button type="submit" class="btn btn-gold">OPEN NEW ROUND</button>
+                            </form>
+                        {% endif %}
+                    {% else %}
+                        <p class="hint">Round #{{ open_round['id'] }} is open for betting.</p>
+
+                        <form method="post" action="{{ url_for('roulette.place_bet') }}" class="inline-form roulette-bet-form">
+                            <label>Bet type
+                                <select name="bet_type" id="bet-type">
+                                    <option value="straight">Straight (single number)</option>
+                                    <option value="color">Red / Black</option>
+                                    <option value="parity">Odd / Even</option>
+                                    <option value="range">Low (1-18) / High (19-36)</option>
+                                    <option value="dozen">Dozen</option>
+                                    <option value="column">Column</option>
+                                </select>
+                            </label>
+                            <label>Value
+                                <select name="bet_value" id="bet-value">
+                                    {% for n in numbers %}
+                                        <option value="{{ n }}">{{ n }}</option>
+                                    {% endfor %}
+                                </select>
+                            </label>
+                            <label>Amount
+                                <input type="number" name="amount" min="1" value="{{ [user['tokens'], 10] | min }}" max="{{ user['tokens'] }}" required>
+                            </label>
+                            <button type="submit" class="btn btn-gold" {% if user['tokens'] < 1 %}disabled{% endif %}>PLACE BET</button>
+                        </form>
+                        <p class="hint">Payouts: straight 35:1, dozen/column 2:1, red-black/odd-even/low-high 1:1 (stake returned too). The Value list changes to match whichever bet type you pick.</p>
+
+                        <h3>Players at the table</h3>
+                        <p class="hint">Everyone registered, and whether they've bet in this round yet -- not live presence (this app doesn't track who's actually looking at the page right now), just the full roster.</p>
+                        <ul class="roulette-roster">
+                            {% for p in roster %}
+                                <li class="{{ 'roster-bet' if p.has_bet else 'roster-waiting' }}">
+                                    <img class="reel-icon reel-icon-small" src="{{ url_for('player_icon_svg', username=p.username) }}" alt="">
+                                    <strong>{{ p.username }}</strong>
+                                    {% if p.has_bet %}
+                                        <span class="pos">bet {{ p.bet_total }} ({{ p.bet_count }} bet{{ '' if p.bet_count == 1 else 's' }})</span>
+                                    {% else %}
+                                        <span class="hint">still deciding&hellip;</span>
+                                    {% endif %}
+                                </li>
+                            {% else %}
+                                <li class="hint">No other players registered yet.</li>
+                            {% endfor %}
+                        </ul>
+
+                        {% if is_banker %}
+                            <form method="post" action="{{ url_for('roulette.spin') }}">
+                                <button type="submit" class="btn btn-gold btn-spin" {% if not bets %}disabled{% endif %}>SPIN ROULETTE</button>
+                            </form>
+                            {% if not bets %}<p class="hint">Waiting for at least one bet before you can spin.</p>{% endif %}
+                        {% else %}
+                            <p class="hint">Only the Banker (David) can spin once bets are in.</p>
+                        {% endif %}
+
+                        <h3>Bets on the table</h3>
+                        {% if bets %}
+                            <ul class="roulette-bet-list">
+                                {% for b in bets %}
+                                    <li>
+                                        <strong>{{ b['username'] }}</strong> --
+                                        {{ b['amount'] }} on
+                                        {% if b['bet_type'] == 'straight' %}{{ b['bet_value'] }}
+                                        {% elif b['bet_type'] == 'dozen' %}dozen {{ b['bet_value']|int + 1 }}
+                                        {% elif b['bet_type'] == 'column' %}column {{ b['bet_value']|int + 1 }}
+                                        {% else %}{{ b['bet_value'] }}{% endif %}
+                                        ({{ b['bet_type'] }})
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p class="hint">No bets yet.</p>
+                        {% endif %}
+                    {% endif %}
+
+                    <div class="token-count">Tokens: <strong>{{ user['tokens'] }}</strong></div>
+                </div>
+            </div>
         </div>
 
         <div class="payout-table roulette-wheel-ref">
@@ -91,7 +131,8 @@
     </div>
 
     <aside class="side-panel">
-        <div class="card">
+        <div class="card" id="roulette-last-round-card"
+             style="{{ 'visibility: hidden;' if should_animate_spin else '' }}">
             <h2>Last Round</h2>
             {% if last_round %}
                 <p>Round #{{ last_round['id'] }} -- landed on

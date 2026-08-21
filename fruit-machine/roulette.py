@@ -53,6 +53,71 @@ def number_color(n):
     return "red" if n in RED_NUMBERS else "black"
 
 
+# The real physical order of pockets around a European wheel -- NOT
+# numeric order. Needed for the spin animation: the wedge colors and the
+# rotation angle that lands on the winning number both depend on where a
+# number actually sits relative to its neighbors on the wheel, not where
+# it sits in the betting table layout.
+EUROPEAN_WHEEL_ORDER = [
+    0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23,
+    10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26,
+]
+_WHEEL_HEX = {"red": "#c0392b", "black": "#1a1a1a", "green": "#2e7d32"}
+
+
+def wheel_conic_gradient():
+    """A CSS conic-gradient() string drawing all 37 wedges in their real
+    wheel order and correct color, wedge 0 (the number 0) starting at the
+    top (0deg) -- matches where the pointer sits and where the rotation
+    math in roulette.js assumes 0deg is."""
+    n = len(EUROPEAN_WHEEL_ORDER)
+    step = 100.0 / n
+    stops = []
+    for i, num in enumerate(EUROPEAN_WHEEL_ORDER):
+        color = _WHEEL_HEX[number_color(num)]
+        stops.append(f"{color} {i * step:.4f}% {(i + 1) * step:.4f}%")
+    return "conic-gradient(from 0deg, " + ", ".join(stops) + ")"
+
+
+def wheel_labels():
+    """One entry per pocket for the template to position around the
+    wheel: the number, its color, and the two CSS transforms needed --
+    `angle` places the label at the pocket's center via the standard
+    rotate+translate circle-layout trick, `counter_angle` (-angle)
+    un-rotates just the number text inside it so it reads upright rather
+    than radiating out at an angle."""
+    n = len(EUROPEAN_WHEEL_ORDER)
+    step = 360.0 / n
+    return [
+        {
+            "number": num,
+            "color": number_color(num),
+            "angle": (i + 0.5) * step,
+            "counter_angle": -(i + 0.5) * step,
+        }
+        for i, num in enumerate(EUROPEAN_WHEEL_ORDER)
+    ]
+
+
+def wheel_target_rotation(winning_number, extra_spins=5):
+    """Degrees to rotate the wheel element (clockwise, CSS transform:
+    rotate() convention) so winning_number's pocket ends up under the
+    fixed top pointer, plus extra_spins full clockwise turns first so
+    the animation actually looks like a spin instead of a snap.
+
+    A pocket originally centered at wheel-frame angle A (clockwise from
+    top, per wheel_conic_gradient's "from 0deg") ends up at screen angle
+    (A + R) mod 360 once the wheel is rotated by R. Landing it at the
+    pointer (screen angle 0) means R = -A (mod 360); adding whole
+    360*extra_spins turns is a no-op on the final resting angle but
+    makes the transition actually traverse them first."""
+    n = len(EUROPEAN_WHEEL_ORDER)
+    step = 360.0 / n
+    idx = EUROPEAN_WHEEL_ORDER.index(winning_number)
+    center_angle = (idx + 0.5) * step
+    return (360 * extra_spins) - center_angle
+
+
 # Bet types implemented in this initial scaffold. Deliberately NOT
 # included yet: split/street/corner/six-line ("inside" bets that need a
 # clickable adjacency-aware betting grid) -- flagged as a follow-up in
@@ -176,6 +241,35 @@ def get_round_bets(db, round_id):
     ).fetchall()
 
 
+def get_player_roster(db, round_id):
+    """Every registered (non-admin) player, and whether they've placed a
+    bet in the given round yet -- so the Banker can see who's still
+    expected to bet before spinning, not just who already has. "Active"
+    here means "a registered player," not genuine real-time presence --
+    this app has no session-heartbeat/last-seen tracking, so it can't
+    tell who's actually looking at the page right now. Flagged as a
+    known simplification, not a claim of true live presence."""
+    rows = db.execute("SELECT id, username FROM users WHERE is_admin = 0 ORDER BY username").fetchall()
+    if round_id is None:
+        return [{"username": r["username"], "has_bet": False, "bet_count": 0, "bet_total": 0} for r in rows]
+    bet_rows = db.execute(
+        "SELECT user_id, COUNT(*) AS bet_count, COALESCE(SUM(amount), 0) AS bet_total "
+        "FROM roulette_bets WHERE round_id = ? GROUP BY user_id",
+        (round_id,),
+    ).fetchall()
+    bet_by_user = {r["user_id"]: r for r in bet_rows}
+    roster = []
+    for r in rows:
+        b = bet_by_user.get(r["id"])
+        roster.append({
+            "username": r["username"],
+            "has_bet": b is not None,
+            "bet_count": b["bet_count"] if b else 0,
+            "bet_total": b["bet_total"] if b else 0,
+        })
+    return roster
+
+
 @roulette_bp.route("/")
 @login_required
 def table():
@@ -183,11 +277,22 @@ def table():
     db = get_db()
     open_round = get_open_round(db)
     bets = get_round_bets(db, open_round["id"]) if open_round else []
+    roster = get_player_roster(db, open_round["id"] if open_round else None)
 
     last_round = db.execute(
         "SELECT * FROM roulette_rounds WHERE status = 'resolved' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     last_bets = get_round_bets(db, last_round["id"]) if last_round else []
+
+    # Play the spin animation once per browser session per resolved round
+    # -- the table is shared across multiple players, so there's no
+    # single "the person who just spun" moment to hang a one-shot reveal
+    # off of the way the fruit machine does; instead each player's own
+    # session remembers which round id they've already watched resolve.
+    should_animate_spin = False
+    if last_round and session.get("seen_round_id") != last_round["id"]:
+        should_animate_spin = True
+        session["seen_round_id"] = last_round["id"]
 
     return render_template(
         "roulette.html",
@@ -195,10 +300,15 @@ def table():
         is_banker=is_banker(user),
         open_round=open_round,
         bets=bets,
+        roster=roster,
         last_round=last_round,
         last_bets=last_bets,
         number_color=number_color,
         numbers=list(range(37)),
+        wheel_conic_gradient=wheel_conic_gradient(),
+        wheel_labels=wheel_labels(),
+        should_animate_spin=should_animate_spin,
+        wheel_target_rotation=(wheel_target_rotation(last_round["winning_number"]) if should_animate_spin else 0),
     )
 
 
