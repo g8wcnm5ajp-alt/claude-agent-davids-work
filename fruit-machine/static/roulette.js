@@ -41,9 +41,13 @@
 // as the fruit machine's spin.js. Plays at most once per browser session
 // per resolved round (see should_animate_spin in roulette.py) so a page
 // reload doesn't replay it endlessly.
+window.__rouletteAnimating = false;
+
 (function () {
     const stage = document.getElementById("roulette-stage");
     if (!stage || stage.dataset.shouldAnimate !== "true") return;
+
+    window.__rouletteAnimating = true;
 
     const bettingArea = document.getElementById("roulette-betting-area");
     const wheelScene = document.getElementById("roulette-wheel-scene");
@@ -95,5 +99,33 @@
         wheelScene.classList.remove("zoomed", "showing");
         bettingArea.style.display = "";
         bettingArea.classList.remove("rolling-away");
+        window.__rouletteAnimating = false;
     }, ROLL_AWAY_MS + SPIN_MS + ZOOM_MS + RESULT_HOLD_MS);
+})();
+
+// Auto-refresh: the table is shared across multiple players with no
+// push/websocket layer, so the only way to see someone else's bet (or
+// the Banker opening a new round) land without manually reloading is to
+// poll. Reloads the whole page every REFRESH_MS -- skipped, not just
+// delayed, on any tick where either:
+//   - the spin animation is currently mid-sequence (reloading would cut
+//     it off and skip straight to the static result), or
+//   - focus is inside the bet form (reloading would wipe out an amount
+//     or selection the player hasn't submitted yet).
+// Both are re-checked on every tick, so a refresh happens as soon as
+// neither is true anymore rather than being silently skipped forever.
+(function () {
+    const REFRESH_MS = 8000;
+    const betForm = document.querySelector(".roulette-bet-form");
+
+    function focusInBetForm() {
+        return !!betForm && betForm.contains(document.activeElement);
+    }
+
+    setInterval(() => {
+        if (document.hidden) return; // don't reload a backgrounded tab
+        if (window.__rouletteAnimating) return;
+        if (focusInBetForm()) return;
+        location.reload();
+    }, REFRESH_MS);
 })();
