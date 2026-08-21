@@ -10,6 +10,12 @@
     const finalSymbols = reelsEl.dataset.final.split(",");
     const allSymbols = reelsEl.dataset.symbols.split(",");
     const reelEls = reelsEl.querySelectorAll(".reel");
+    // Which reel indices actually animate: every reel for a fresh spin,
+    // only the re-rolled one(s) for a HOLD & RE-SPIN result (the held
+    // reels can't change, so they never animate -- see /hold in app.py).
+    const rerollIndices = new Set(
+        (reelsEl.dataset.reroll || "").split(",").filter((s) => s !== "").map(Number)
+    );
     // Maps a symbol string to the username it belongs to, for the reel
     // slots that are a player's icon rather than a fixed fruit -- the
     // rest of the pool renders as plain emoji text.
@@ -105,8 +111,6 @@
         return;
     }
 
-    reelEls.forEach((reel) => reel.classList.add("spinning"));
-
     const spinDurationMs = 900;
     const tickMs = 80;
     const stopStaggerMs = 300;
@@ -114,8 +118,20 @@
     // each wheel stops stopStaggerMs after the previous one.
     const stopDelays = Array.from(reelEls, (_, i) => spinDurationMs + i * stopStaggerMs);
 
+    let lastRerollStop = 0;
     reelEls.forEach((reel, i) => {
         const symbolEl = reel.querySelector(".reel-symbol");
+
+        if (!rerollIndices.has(i)) {
+            // Held reel (or every reel is eligible but this one just isn't
+            // in the reroll set, e.g. a non-hold load) -- it can't change,
+            // so set it once and skip the animation entirely.
+            setReelSymbol(symbolEl, finalSymbols[i]);
+            return;
+        }
+
+        lastRerollStop = Math.max(lastRerollStop, stopDelays[i]);
+        reel.classList.add("spinning");
         const interval = setInterval(() => {
             setReelSymbol(symbolEl, allSymbols[Math.floor(Math.random() * allSymbols.length)]);
         }, tickMs);
@@ -127,6 +143,6 @@
         }, stopDelays[i]);
     });
 
-    const revealDelayMs = stopDelays[stopDelays.length - 1] + 1000;
+    const revealDelayMs = (lastRerollStop || spinDurationMs) + 1000;
     setTimeout(reveal, revealDelayMs);
 })();

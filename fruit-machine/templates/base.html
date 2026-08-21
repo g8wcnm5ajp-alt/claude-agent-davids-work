@@ -9,7 +9,7 @@
 <body>
     <div class="wrap">
         <header class="topbar">
-            <a class="brand" href="{{ url_for('game') if session.get('user_id') else url_for('login') }}">🎰 FRUIT MACHINE</a>
+            <a class="brand" href="{{ url_for('game') if session.get('user_id') else url_for('login') }}">🎰 FRUIT MACHINE <span class="version-badge">v{{ app_version }}</span></a>
             {% if session.get('user_id') %}
             <nav>
                 {% if user and user['is_admin'] %}

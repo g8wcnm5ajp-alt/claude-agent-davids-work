@@ -26,6 +26,13 @@ STARTING_TOKENS = 100
 SPIN_COST = 1
 DEFAULT_ADMIN_PASSWORD = os.environ.get("FRUIT_MACHINE_ADMIN_PASSWORD", "fruit-admin-2026")
 
+# Bump this by hand whenever a notable feature or fix ships -- shown in the
+# page header so it's obvious at a glance which build a given host (.230 vs
+# .232) is running, since this app has been redeployed many times over the
+# course of one build session. Not tied to git tags or any automated
+# versioning -- just a simple, human-maintained marker.
+APP_VERSION = "1.0.0"
+
 # --- game design -----------------------------------------------------------
 #
 # A spin is decided in two steps, not by independently randomizing three
@@ -163,7 +170,7 @@ STATIC_VERSION = _static_version()
 
 @app.context_processor
 def inject_static_version():
-    return {"static_version": STATIC_VERSION}
+    return {"static_version": STATIC_VERSION, "app_version": APP_VERSION}
 
 
 # --- db ----------------------------------------------------------------
@@ -528,27 +535,36 @@ def game():
     last_win = session.pop("last_win", None)
     last_payout = session.pop("last_payout", None)
     last_side_note = session.pop("last_side_note", None)
+    last_reroll_indices = session.pop("last_reroll_indices", None)
     # "spin" -> this page load is the immediate aftermath of a fresh
-    # /spin, so the reel-stop animation is about to run and the token
-    # count / result / nudge availability should all stay hidden until it
-    # finishes (see spin.js). "nudge" -> a nudge confirmation just
+    # /spin, so the reel-stop animation is about to run (every reel
+    # rerolls) and the token count / result / nudge availability should
+    # all stay hidden until it finishes (see spin.js). "hold" -> a HOLD &
+    # RE-SPIN just concluded -- only the previously-off reel(s) reroll,
+    # the held ones stay put, but it's still an animated reveal like a
+    # fresh spin (same delay, same hidden-until-reveal treatment), just
+    # over a smaller set of reels. "nudge" -> a nudge confirmation just
     # concluded (via /spin while a nudge was pending) -- no reel animation
-    # runs for that, so nothing needs to wait; reveal immediately.
+    # runs for that at all, so nothing needs to wait; reveal immediately.
     last_source = session.pop("last_source", None)
     settings = get_settings()
 
     # The DB is already updated by the time this page renders (the atomic
-    # UPDATE happened in /spin or /nudge), but the reel-stop animation is
-    # purely client-side and takes ~1s+ to finish -- showing the *new*
-    # token count and win/lose result immediately would spoil the spin
-    # before it visually resolves. tokens_before_spin lets the template
-    # show the pre-spin count first; JS reveals the real numbers once the
-    # reels have actually stopped (see spin.js). Only computed for a
-    # fresh spin -- a nudge conclusion reveals immediately, so the
-    # "before" value is irrelevant there.
-    tokens_before_spin = (
-        (user["tokens"] - last_payout + SPIN_COST) if (last_reels and last_source == "spin") else None
-    )
+    # UPDATE happened in /spin, /hold, or /nudge), but the reel-stop
+    # animation is purely client-side and takes ~1s+ to finish -- showing
+    # the *new* token count and win/lose result immediately would spoil
+    # the spin before it visually resolves. tokens_before_spin lets the
+    # template show the pre-spin count first; JS reveals the real numbers
+    # once the reels have actually stopped (see spin.js). A fresh spin
+    # charged SPIN_COST; a hold didn't (it's free, like nudging) -- only
+    # the payout needs backing out for that one. Irrelevant for a nudge
+    # conclusion, which reveals immediately with no "before" to show.
+    if last_reels and last_source == "spin":
+        tokens_before_spin = user["tokens"] - last_payout + SPIN_COST
+    elif last_reels and last_source == "hold":
+        tokens_before_spin = user["tokens"] - last_payout
+    else:
+        tokens_before_spin = None
 
     # nudge_previews maps EVERY currently-nudgeable reel index to its own
     # up/down preview symbols -- with more than 3 wheels, a near-miss can
@@ -563,8 +579,10 @@ def game():
     nudge_state = session.get("nudge_state")
     nudge_previews = {}
     nudge_credits = None
+    hold_indices = []
     if nudge_state:
         nudge_credits = nudge_state["credits"]
+        hold_indices = list(nudge_state["reel_indices"])
         if nudge_credits > 0:
             for idx in nudge_state["reel_indices"]:
                 cur_symbol = nudge_state["reels"][idx]
@@ -579,6 +597,16 @@ def game():
     # (which carries the id too, only needed server-side for payouts).
     icon_map = {icon: username for icon, (_uid, username) in icon_owners.items()}
 
+    # Which reel indices should actually animate on this load: all of
+    # them for a fresh spin, only the ones HOLD re-rolled for a hold
+    # result, none for anything else (nudge/plain reload don't animate).
+    if last_source == "spin":
+        reroll_indices = list(range(settings["num_wheels"]))
+    elif last_source == "hold":
+        reroll_indices = last_reroll_indices or []
+    else:
+        reroll_indices = []
+
     return render_template(
         "game.html", user=user, leaderboard=leaderboard,
         house_spent=totals["spent"], house_won=totals["won"], house_net=house_net,
@@ -587,10 +615,12 @@ def game():
         symbols=all_symbols, icon_map=icon_map, num_wheels=settings["num_wheels"],
         my_username=user["username"],
         tokens_before_spin=tokens_before_spin,
-        should_delay_reveal=(last_source == "spin"),
+        should_delay_reveal=(last_source in ("spin", "hold")),
+        reroll_indices=reroll_indices,
         nudge_active=(nudge_state is not None),
         nudge_previews=nudge_previews,
         nudge_credits=nudge_credits,
+        hold_indices=hold_indices,
         nudge_reels=(nudge_state["reels"] if nudge_state else None),
     )
 
@@ -710,6 +740,59 @@ def nudge(reel_index, direction):
     # of credits -- see /spin's nudge_state branch.
     nudge_state["reel_indices"] = find_nudge_reels(reels)
     session["nudge_state"] = nudge_state
+
+    return redirect(url_for("game"))
+
+
+@app.route("/hold", methods=["POST"])
+@login_required
+def hold():
+    """HOLD & RE-SPIN: an alternative to nudging, not a companion to it --
+    freezes the currently-matching wheels and randomly re-rolls only the
+    off one(s), once, then immediately scores whatever that lands on.
+    Unlike nudging (deterministic, credit-limited), this is pure chance;
+    unlike a fresh spin, the held wheels can't change and nothing is
+    charged. Picking this forfeits whatever nudge credits were left --
+    it replaces the nudge opportunity for this near-miss, it doesn't
+    stack with it."""
+    nudge_state = session.get("nudge_state")
+    if not nudge_state:
+        flash("No hold available.", "error")
+        return redirect(url_for("game"))
+
+    user = current_user()
+    db = get_db()
+    settings = get_settings()
+    icon_owners = get_icon_owners(db)
+    all_symbols = effective_symbols(icon_owners)
+
+    reels = nudge_state["reels"]
+    reroll_indices = list(nudge_state["reel_indices"])
+    # Uniform, not the SYMBOL_WEIGHTS-weighted draw a fresh spin's win
+    # branch uses -- and deliberately not filtered to avoid a full match
+    # the way a fresh LOSING spin's reels are, since landing the match is
+    # the entire point of holding.
+    for idx in reroll_indices:
+        reels[idx] = random.choice(all_symbols)
+
+    full_win = len(set(reels)) == 1
+    payout = 0
+    side_note = None
+    if full_win:
+        payout, side_note = resolve_win(db, reels, user, icon_owners, settings)
+        db.execute(
+            "UPDATE users SET tokens = tokens + ?, total_won = total_won + ? WHERE id = ?",
+            (payout, payout, user["id"]),
+        )
+        db.commit()
+
+    session["last_reels"] = reels
+    session["last_win"] = full_win
+    session["last_payout"] = payout
+    session["last_side_note"] = side_note
+    session["last_source"] = "hold"
+    session["last_reroll_indices"] = reroll_indices
+    session.pop("nudge_state", None)
 
     return redirect(url_for("game"))
 

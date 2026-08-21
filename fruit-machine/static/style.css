@@ -45,6 +45,14 @@ body {
     text-decoration: none;
     text-shadow: 0 0 8px rgba(41, 182, 246, 0.5);
 }
+.version-badge {
+    font-size: 0.7rem;
+    font-weight: normal;
+    letter-spacing: normal;
+    color: #9db8cc;
+    text-shadow: none;
+    vertical-align: middle;
+}
 
 .topbar nav a {
     color: var(--panel-light);
@@ -258,6 +266,19 @@ body {
     color: var(--accent-light);
     margin-bottom: 1rem;
 }
+
+/* HOLD & RE-SPIN: an alternative to nudging (freeze the matching wheels,
+   randomly re-roll the rest, once), not a companion to it -- styled as
+   its own distinct amber/gold-ish accent so it doesn't read as "just
+   another gold button" next to CONFIRM. */
+.hold-btn {
+    background: linear-gradient(180deg, #ffcc80, #ff9800);
+    color: var(--bg);
+    box-shadow: 0 3px 0 #c66900;
+    margin-bottom: 0.5rem;
+}
+.hold-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 #c66900; }
+.hold-hint { margin-top: -0.25rem; margin-bottom: 0.75rem; }
 
 .btn-spin {
     font-size: 1.3rem;

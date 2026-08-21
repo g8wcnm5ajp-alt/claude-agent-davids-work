@@ -9,6 +9,7 @@
             <div class="reels" id="reels"
                  data-final="{{ (display_reels or (['❓'] * num_wheels)) | join(',') }}"
                  data-spin="{{ 'true' if should_delay_reveal else 'false' }}"
+                 data-reroll="{{ reroll_indices | join(',') }}"
                  data-symbols="{{ symbols | join(',') }}"
                  data-icon-map="{{ icon_map | tojson | forceescape }}"
                  data-nudge-previews="{{ nudge_previews | tojson | forceescape }}">
@@ -42,11 +43,19 @@
                      style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
                     {% if nudge_credits > 0 %}
                         So close! {{ nudge_credits }} nudge{{ '' if nudge_credits == 1 else 's' }} left --
-                        nudge a wheel or press CONFIRM to lock it in.
+                        nudge a wheel, hold & re-spin, or press CONFIRM to lock it in.
                     {% else %}
-                        Out of nudges -- press CONFIRM to lock it in.
+                        Out of nudges -- hold & re-spin, or press CONFIRM to lock it in.
                     {% endif %}
                 </div>
+                <form method="post" action="{{ url_for('hold') }}" id="hold-form"
+                      style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
+                    <button type="submit" class="btn hold-btn">HOLD & RE-SPIN</button>
+                </form>
+                <p class="hint hold-hint" style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
+                    Holds the matching wheels and takes one random re-spin of the rest instead of nudging --
+                    picking this gives up any nudges left.
+                </p>
             {% endif %}
 
             <form method="post" action="{{ url_for('spin') }}" id="spin-form">
