@@ -38,23 +38,28 @@
                 {% endif %}
             {% endif %}
 
-            {% if nudge_active %}
+            {% if nudge_active and nudge_mode == 'nudge' %}
                 <div class="nudge-credits-indicator" id="nudge-credits-indicator"
                      style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
                     {% if nudge_credits > 0 %}
                         So close! {{ nudge_credits }} nudge{{ '' if nudge_credits == 1 else 's' }} left --
-                        nudge a wheel, hold & re-spin, or press CONFIRM to lock it in.
+                        nudge a wheel or press CONFIRM to lock it in.
                     {% else %}
-                        Out of nudges -- hold & re-spin, or press CONFIRM to lock it in.
+                        Out of nudges -- press CONFIRM to lock it in.
                     {% endif %}
+                </div>
+            {% elif nudge_active and nudge_mode == 'hold' %}
+                <div class="nudge-credits-indicator" id="nudge-credits-indicator"
+                     style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
+                    So close! Hold your matching wheels for one random re-spin, or press CONFIRM to lock it in.
                 </div>
                 <form method="post" action="{{ url_for('hold') }}" id="hold-form"
                       style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
                     <button type="submit" class="btn hold-btn">HOLD & RE-SPIN</button>
                 </form>
                 <p class="hint hold-hint" style="{{ 'visibility: hidden;' if should_delay_reveal else '' }}">
-                    Holds the matching wheels and takes one random re-spin of the rest instead of nudging --
-                    picking this gives up any nudges left.
+                    Freezes the matching wheels and takes one random re-spin of the rest -- no nudging is on
+                    offer for this near-miss.
                 </p>
             {% endif %}
 

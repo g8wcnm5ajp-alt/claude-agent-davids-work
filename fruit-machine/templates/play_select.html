@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Choose a Game{% endblock %}
+{% block content %}
+<div class="play-select">
+    <h1>Welcome, {{ user['username'] }}</h1>
+    <p class="hint">Tokens: <strong>{{ user['tokens'] }}</strong> -- shared across both games.</p>
+
+    <div class="play-select-options">
+        <a class="play-select-card" href="{{ url_for('game') }}">
+            <span class="play-select-icon">🎰</span>
+            <span class="play-select-title">Fruit Machine</span>
+            <span class="hint">Spin, nudge or hold your way to a match. Land your own icon for a bonus.</span>
+        </a>
+        <a class="play-select-card" href="{{ url_for('roulette.table') }}">
+            <span class="play-select-icon">🎡</span>
+            <span class="play-select-title">Roulette</span>
+            <span class="hint">European table, shared with other players. David is the Banker.</span>
+        </a>
+    </div>
+</div>
+{% endblock %}

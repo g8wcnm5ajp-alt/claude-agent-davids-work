@@ -69,6 +69,16 @@ MIN_WIN_PROBABILITY, MAX_WIN_PROBABILITY = 0.01, 0.99
 DEFAULT_NUDGE_MIN, DEFAULT_NUDGE_MAX = 1, 6
 ABSOLUTE_NUDGE_MIN, ABSOLUTE_NUDGE_MAX = 0, 10
 
+# HOLD & RE-SPIN is an alternative to nudging, not a companion to it --
+# David's explicit design: for a given near-miss, the player should never
+# be offered both at once. Rather than let the player choose between them
+# (the first version of this did, and it was wrong per that feedback), the
+# server randomly decides WHICH mechanic a given near-miss offers, at the
+# moment the near-miss happens -- hold_chance_pct is the odds it's HOLD
+# rather than NUDGE. The choice is stored as nudge_state["mode"].
+DEFAULT_HOLD_CHANCE_PCT = 2.0
+MIN_HOLD_CHANCE_PCT, MAX_HOLD_CHANCE_PCT = 0.0, 100.0
+
 # Player name-icons: every registered (non-admin) player has a personal
 # reel symbol -- player_icon(username), e.g. "Joe 1" -- mixed into the
 # normal fruit pool. Landing a full line of icons pays out differently
@@ -240,6 +250,7 @@ def init_db():
             ("win_probability", str(DEFAULT_WIN_PROBABILITY)),
             ("nudge_min", str(DEFAULT_NUDGE_MIN)),
             ("nudge_max", str(DEFAULT_NUDGE_MAX)),
+            ("hold_chance_pct", str(DEFAULT_HOLD_CHANCE_PCT)),
             ("icon_chance_pct", str(DEFAULT_ICON_CHANCE_PCT)),
             ("own_icon_bonus", str(DEFAULT_OWN_ICON_BONUS)),
             ("other_players_penalty", str(DEFAULT_OTHER_PLAYERS_PENALTY)),
@@ -262,6 +273,7 @@ def get_settings():
         "win_probability": float(values.get("win_probability", DEFAULT_WIN_PROBABILITY)),
         "nudge_min": int(values.get("nudge_min", DEFAULT_NUDGE_MIN)),
         "nudge_max": int(values.get("nudge_max", DEFAULT_NUDGE_MAX)),
+        "hold_chance_pct": float(values.get("hold_chance_pct", DEFAULT_HOLD_CHANCE_PCT)),
         "icon_chance_pct": float(values.get("icon_chance_pct", DEFAULT_ICON_CHANCE_PCT)),
         "own_icon_bonus": int(values.get("own_icon_bonus", DEFAULT_OWN_ICON_BONUS)),
         "other_players_penalty": int(values.get("other_players_penalty", DEFAULT_OTHER_PLAYERS_PENALTY)),
@@ -475,7 +487,7 @@ def register():
         user = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
         session["user_id"] = user["id"]
         flash(f"Welcome, {username}! You start with {STARTING_TOKENS} tokens.", "success")
-        return redirect(url_for("game"))
+        return redirect(url_for("play_select"))
 
     return render_template("register.html")
 
@@ -493,7 +505,7 @@ def login():
         session["user_id"] = user["id"]
         if user["is_admin"]:
             return redirect(url_for("admin_panel"))
-        return redirect(url_for("game"))
+        return redirect(url_for("play_select"))
 
     return render_template("login.html")
 
@@ -502,6 +514,19 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/play")
+@login_required
+def play_select():
+    """Landing page after login/register: choose Fruit Machine or
+    Roulette. Admins skip this entirely (redirected straight to the
+    admin panel, same as they already were pre-existing) -- they don't
+    play either game through their own account."""
+    user = current_user()
+    if user["is_admin"]:
+        return redirect(url_for("admin_panel"))
+    return render_template("play_select.html", user=user)
 
 
 @app.route("/icon/<username>.svg")
@@ -577,13 +602,17 @@ def game():
     icon_owners = get_icon_owners(db)
     all_symbols = effective_symbols(icon_owners)
 
+    # Exactly one of nudge or hold is ever on offer for a given near-miss
+    # (nudge_state["mode"], decided once back in /spin) -- never both, so
+    # nudge_previews and hold_indices are mutually exclusive below, not
+    # independently-gated options the player picks between.
     nudge_state = session.get("nudge_state")
+    nudge_mode = nudge_state.get("mode") if nudge_state else None
     nudge_previews = {}
     nudge_credits = None
     hold_indices = []
-    if nudge_state:
+    if nudge_state and nudge_mode == "nudge":
         nudge_credits = nudge_state["credits"]
-        hold_indices = list(nudge_state["reel_indices"])
         if nudge_credits > 0:
             for idx in nudge_state["reel_indices"]:
                 cur_symbol = nudge_state["reels"][idx]
@@ -592,6 +621,8 @@ def game():
                     "up": all_symbols[(pos + 1) % len(all_symbols)],
                     "down": all_symbols[(pos - 1) % len(all_symbols)],
                 }
+    elif nudge_state and nudge_mode == "hold":
+        hold_indices = list(nudge_state["reel_indices"])
 
     # Maps each icon symbol string to the plain username the reel-symbol
     # JS needs to build /icon/<username>.svg -- separate from icon_owners
@@ -619,6 +650,7 @@ def game():
         should_delay_reveal=(last_source in ("spin", "hold")),
         reroll_indices=reroll_indices,
         nudge_active=(nudge_state is not None),
+        nudge_mode=nudge_mode,
         nudge_previews=nudge_previews,
         nudge_credits=nudge_credits,
         hold_indices=hold_indices,
@@ -693,10 +725,15 @@ def spin():
     if not win and settings["nudge_max"] > 0:
         nudge_indices = find_nudge_reels(reels)
         if nudge_indices:
+            # Exactly one of NUDGE or HOLD is offered for this near-miss,
+            # decided now, not left to the player to pick between both --
+            # see the DEFAULT_HOLD_CHANCE_PCT comment for why.
+            mode = "hold" if random.random() < (settings["hold_chance_pct"] / 100.0) else "nudge"
             session["nudge_state"] = {
                 "reels": list(reels),
                 "reel_indices": nudge_indices,
                 "credits": random.randint(settings["nudge_min"], settings["nudge_max"]),
+                "mode": mode,
             }
 
     return redirect(url_for("game"))
@@ -710,7 +747,7 @@ def nudge(reel_index, direction):
         return redirect(url_for("game"))
 
     nudge_state = session.get("nudge_state")
-    if not nudge_state or nudge_state["credits"] <= 0:
+    if not nudge_state or nudge_state.get("mode") != "nudge" or nudge_state["credits"] <= 0:
         flash("No nudges available.", "error")
         return redirect(url_for("game"))
 
@@ -753,11 +790,12 @@ def hold():
     off one(s), once, then immediately scores whatever that lands on.
     Unlike nudging (deterministic, credit-limited), this is pure chance;
     unlike a fresh spin, the held wheels can't change and nothing is
-    charged. Picking this forfeits whatever nudge credits were left --
-    it replaces the nudge opportunity for this near-miss, it doesn't
-    stack with it."""
+    charged. Which of the two a given near-miss even offers is decided
+    randomly back in /spin (nudge_state["mode"]), not by the player
+    picking -- this route only runs the mechanic once that choice has
+    already been made for this near-miss."""
     nudge_state = session.get("nudge_state")
-    if not nudge_state:
+    if not nudge_state or nudge_state.get("mode") != "hold":
         flash("No hold available.", "error")
         return redirect(url_for("game"))
 
@@ -811,6 +849,7 @@ def admin_panel():
         absolute_nudge_min=ABSOLUTE_NUDGE_MIN, absolute_nudge_max=ABSOLUTE_NUDGE_MAX,
         min_icon_chance_pct=MIN_ICON_CHANCE_PCT, max_icon_chance_pct=MAX_ICON_CHANCE_PCT,
         absolute_icon_amount_min=ABSOLUTE_ICON_AMOUNT_MIN, absolute_icon_amount_max=ABSOLUTE_ICON_AMOUNT_MAX,
+        min_hold_chance_pct=MIN_HOLD_CHANCE_PCT, max_hold_chance_pct=MAX_HOLD_CHANCE_PCT,
     )
 
 
@@ -822,6 +861,7 @@ def admin_settings():
         win_probability_pct = float(request.form.get("win_probability_pct", ""))
         nudge_min = int(request.form.get("nudge_min", ""))
         nudge_max = int(request.form.get("nudge_max", ""))
+        hold_chance_pct = float(request.form.get("hold_chance_pct", ""))
         icon_chance_pct = float(request.form.get("icon_chance_pct", ""))
         own_icon_bonus = int(request.form.get("own_icon_bonus", ""))
         other_players_penalty = int(request.form.get("other_players_penalty", ""))
@@ -847,6 +887,10 @@ def admin_settings():
         flash("Min nudge credits can't be greater than max.", "error")
         return redirect(url_for("admin_panel"))
 
+    if not (MIN_HOLD_CHANCE_PCT <= hold_chance_pct <= MAX_HOLD_CHANCE_PCT):
+        flash(f"Hold chance must be between {MIN_HOLD_CHANCE_PCT:.0f}% and {MAX_HOLD_CHANCE_PCT:.0f}%.", "error")
+        return redirect(url_for("admin_panel"))
+
     if not (MIN_ICON_CHANCE_PCT <= icon_chance_pct <= MAX_ICON_CHANCE_PCT):
         flash(f"Icon win chance must be between {MIN_ICON_CHANCE_PCT:.0f}% and {MAX_ICON_CHANCE_PCT:.0f}%.", "error")
         return redirect(url_for("admin_panel"))
@@ -860,6 +904,7 @@ def admin_settings():
     db.execute("UPDATE settings SET value = ? WHERE key = 'win_probability'", (str(win_probability),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_min'", (str(nudge_min),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'nudge_max'", (str(nudge_max),))
+    db.execute("UPDATE settings SET value = ? WHERE key = 'hold_chance_pct'", (str(hold_chance_pct),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'icon_chance_pct'", (str(icon_chance_pct),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'own_icon_bonus'", (str(own_icon_bonus),))
     db.execute("UPDATE settings SET value = ? WHERE key = 'other_players_penalty'", (str(other_players_penalty),))
@@ -868,7 +913,8 @@ def admin_settings():
     db.commit()
     flash(
         f"Settings updated: {num_wheels} wheels, {win_probability_pct:.0f}% win chance, "
-        f"{nudge_min}-{nudge_max} nudge credits, {icon_chance_pct:.0f}% icon chance.", "success",
+        f"{nudge_min}-{nudge_max} nudge credits, {hold_chance_pct:.0f}% hold chance, "
+        f"{icon_chance_pct:.0f}% icon chance.", "success",
     )
     return redirect(url_for("admin_panel"))
 

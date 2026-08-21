@@ -360,3 +360,32 @@ body {
 .roulette-bet-list { list-style: none; padding: 0; margin: 0.5rem 0; }
 .roulette-bet-list li { padding: 0.25rem 0; border-bottom: 1px solid rgba(41, 182, 246, 0.15); }
 .roulette-bet-form select { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--panel-light); color: var(--bg); }
+
+/* --- game-select landing page --- */
+.play-select { text-align: center; max-width: 700px; margin: 2rem auto; }
+.play-select h1 { color: var(--accent-light); }
+.play-select-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin-top: 2rem;
+}
+@media (max-width: 600px) {
+    .play-select-options { grid-template-columns: 1fr; }
+}
+.play-select-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    background: linear-gradient(180deg, var(--panel), var(--panel-dark));
+    border: 3px solid var(--accent);
+    border-radius: 14px;
+    padding: 2rem 1.5rem;
+    text-decoration: none;
+    color: var(--panel-light);
+    transition: transform 0.1s ease-in-out;
+}
+.play-select-card:hover { transform: translateY(-3px); }
+.play-select-icon { font-size: 3rem; }
+.play-select-title { font-size: 1.3rem; font-weight: bold; color: var(--accent-light); }
