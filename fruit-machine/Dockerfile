@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py entrypoint.sh .
+COPY app.py roulette.py entrypoint.sh .
 RUN chmod +x entrypoint.sh
 COPY templates/ templates/
 COPY static/ static/

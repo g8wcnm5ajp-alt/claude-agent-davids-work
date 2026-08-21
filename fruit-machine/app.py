@@ -149,17 +149,18 @@ app.secret_key = get_or_create_secret_key()
 def _static_version():
     """Cache-busting suffix for static assets (?v=<mtime>) -- Flask's
     default static file serving doesn't change the URL when a file's
-    content changes, so a browser that already cached spin.js or
-    style.css from a previous deploy can keep silently running/rendering
-    the stale version against a fresh backend after a redeploy (confirmed
-    live: a fixed backend plus a browser-cached old spin.js reproduced the
-    exact bug the fix was supposed to remove). One shared version covering
-    both files, computed once from their latest mtime at process start,
+    content changes, so a browser that already cached one of these from a
+    previous deploy can keep silently running/rendering the stale version
+    against a fresh backend after a redeploy (confirmed live: a fixed
+    backend plus a browser-cached old spin.js reproduced the exact bug
+    the fix was supposed to remove). One shared version covering all
+    three files, computed once from their latest mtime at process start,
     not per-request."""
     try:
         return str(int(max(
             os.path.getmtime(os.path.join(app.static_folder, "spin.js")),
             os.path.getmtime(os.path.join(app.static_folder, "style.css")),
+            os.path.getmtime(os.path.join(app.static_folder, "roulette.js")),
         )))
     except OSError:
         return "0"
@@ -937,8 +938,17 @@ def admin_change_password():
     return redirect(url_for("admin_panel"))
 
 
+# Imported down here, not at the top of the file -- roulette.py imports
+# get_db/current_user/login_required/now_iso FROM this module, so this
+# module needs to finish defining them first (a top-of-file import would
+# be a circular import at exactly those names).
+from roulette import init_roulette_db, roulette_bp  # noqa: E402
+
+app.register_blueprint(roulette_bp)
+
 with app.app_context():
     init_db()
+    init_roulette_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

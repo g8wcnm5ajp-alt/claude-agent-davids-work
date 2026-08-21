@@ -15,7 +15,8 @@
                 {% if user and user['is_admin'] %}
                     <a href="{{ url_for('admin_panel') }}">Admin</a>
                 {% else %}
-                    <a href="{{ url_for('game') }}">Play</a>
+                    <a href="{{ url_for('game') }}">Fruit Machine</a>
+                    <a href="{{ url_for('roulette.table') }}">Roulette</a>
                 {% endif %}
                 <a href="{{ url_for('logout') }}">Log out</a>
             </nav>

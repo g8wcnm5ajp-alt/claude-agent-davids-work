@@ -333,3 +333,30 @@ body {
 .inline-form input { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--accent); }
 .inline-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: var(--accent); }
 .inline-form input[type=number] { width: 90px; }
+
+/* --- roulette --- */
+.roulette-cabinet { text-align: left; }
+.roulette-last-result { text-align: center; }
+.roulette-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 0.85rem;
+    color: var(--panel-light);
+}
+.roulette-red { background: var(--error); }
+.roulette-black { background: #1a1a1a; border: 1px solid rgba(234, 246, 255, 0.3); }
+.roulette-green { background: #2e7d32; }
+.roulette-grid {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    gap: 0.3rem;
+    justify-items: center;
+}
+.roulette-bet-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+.roulette-bet-list li { padding: 0.25rem 0; border-bottom: 1px solid rgba(41, 182, 246, 0.15); }
+.roulette-bet-form select { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--panel-light); color: var(--bg); }

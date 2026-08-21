@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Roulette{% endblock %}
+{% block content %}
+<div class="game-layout">
+    <div class="machine-panel">
+        <div class="cabinet roulette-cabinet">
+            <div class="cabinet-top">EUROPEAN ROULETTE</div>
+
+            {% if last_round and last_round['winning_number'] is not none %}
+                <div class="result result-win roulette-last-result">
+                    Last spin: <span class="roulette-number roulette-{{ number_color(last_round['winning_number']) }}">{{ last_round['winning_number'] }}</span>
+                    ({{ number_color(last_round['winning_number']) }})
+                </div>
+            {% endif %}
+
+            {% if not open_round %}
+                <p class="hint">No round is open. {% if is_banker %}Open one to start taking bets.{% else %}Waiting for the Banker to open a round.{% endif %}</p>
+                {% if is_banker %}
+                    <form method="post" action="{{ url_for('roulette.new_round') }}">
+                        <button type="submit" class="btn btn-gold">OPEN NEW ROUND</button>
+                    </form>
+                {% endif %}
+            {% else %}
+                <p class="hint">Round #{{ open_round['id'] }} is open for betting.</p>
+
+                <form method="post" action="{{ url_for('roulette.place_bet') }}" class="inline-form roulette-bet-form">
+                    <label>Bet type
+                        <select name="bet_type" id="bet-type">
+                            <option value="straight">Straight (single number)</option>
+                            <option value="color">Red / Black</option>
+                            <option value="parity">Odd / Even</option>
+                            <option value="range">Low (1-18) / High (19-36)</option>
+                            <option value="dozen">Dozen</option>
+                            <option value="column">Column</option>
+                        </select>
+                    </label>
+                    <label>Value
+                        <select name="bet_value" id="bet-value">
+                            {% for n in numbers %}
+                                <option value="{{ n }}">{{ n }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>Amount
+                        <input type="number" name="amount" min="1" value="{{ [user['tokens'], 10] | min }}" max="{{ user['tokens'] }}" required>
+                    </label>
+                    <button type="submit" class="btn btn-gold" {% if user['tokens'] < 1 %}disabled{% endif %}>PLACE BET</button>
+                </form>
+                <p class="hint">Payouts: straight 35:1, dozen/column 2:1, red-black/odd-even/low-high 1:1 (stake returned too). The Value list changes to match whichever bet type you pick.</p>
+
+                {% if is_banker %}
+                    <form method="post" action="{{ url_for('roulette.spin') }}">
+                        <button type="submit" class="btn btn-gold btn-spin" {% if not bets %}disabled{% endif %}>SPIN ROULETTE</button>
+                    </form>
+                    {% if not bets %}<p class="hint">Waiting for at least one bet before you can spin.</p>{% endif %}
+                {% else %}
+                    <p class="hint">Only the Banker (David) can spin once bets are in.</p>
+                {% endif %}
+
+                <h3>Bets on the table</h3>
+                {% if bets %}
+                    <ul class="roulette-bet-list">
+                        {% for b in bets %}
+                            <li>
+                                <strong>{{ b['username'] }}</strong> --
+                                {{ b['amount'] }} on
+                                {% if b['bet_type'] == 'straight' %}{{ b['bet_value'] }}
+                                {% elif b['bet_type'] == 'dozen' %}dozen {{ b['bet_value']|int + 1 }}
+                                {% elif b['bet_type'] == 'column' %}column {{ b['bet_value']|int + 1 }}
+                                {% else %}{{ b['bet_value'] }}{% endif %}
+                                ({{ b['bet_type'] }})
+                            </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="hint">No bets yet.</p>
+                {% endif %}
+            {% endif %}
+
+            <div class="token-count">Tokens: <strong>{{ user['tokens'] }}</strong></div>
+        </div>
+
+        <div class="payout-table roulette-wheel-ref">
+            <h2>Table Layout</h2>
+            <div class="roulette-grid">
+                {% for n in numbers %}
+                    <span class="roulette-number roulette-{{ number_color(n) }}">{{ n }}</span>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <aside class="side-panel">
+        <div class="card">
+            <h2>Last Round</h2>
+            {% if last_round %}
+                <p>Round #{{ last_round['id'] }} -- landed on
+                    <span class="roulette-number roulette-{{ number_color(last_round['winning_number']) }}">{{ last_round['winning_number'] }}</span>
+                </p>
+                <ul class="roulette-bet-list">
+                    {% for b in last_bets %}
+                        <li>
+                            <strong>{{ b['username'] }}</strong>: {{ b['amount'] }} on
+                            {% if b['bet_type'] == 'straight' %}{{ b['bet_value'] }}{% else %}{{ b['bet_value'] }}{% endif %}
+                            &mdash;
+                            {% if b['payout'] %}<span class="pos">+{{ b['payout'] }}</span>{% else %}<span class="neg">lost</span>{% endif %}
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="hint">No rounds resolved yet.</p>
+            {% endif %}
+        </div>
+    </aside>
+</div>
+
+<script src="{{ url_for('static', filename='roulette.js') }}?v={{ static_version }}"></script>
+{% endblock %}
