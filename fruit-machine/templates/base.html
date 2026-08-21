@@ -10,7 +10,7 @@
     <div class="wrap">
         <header class="topbar">
             {% set brand_href = url_for('admin_panel') if (user and user['is_admin']) else (url_for('play_select') if session.get('user_id') else url_for('login')) %}
-            <a class="brand" href="{{ brand_href }}">🎰 FRUIT MACHINE <span class="version-badge">v{{ app_version }}</span></a>
+            <a class="brand" href="{{ brand_href }}">{% block brand %}🎰 FRUIT MACHINE{% endblock %} <span class="version-badge">v{{ app_version }}</span></a>
             {% if session.get('user_id') %}
             <nav>
                 {% if user and user['is_admin'] %}

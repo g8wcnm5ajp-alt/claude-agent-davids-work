@@ -353,13 +353,30 @@ body {
 .roulette-green { background: #2e7d32; }
 .roulette-grid {
     display: grid;
-    grid-template-columns: repeat(9, 1fr);
-    gap: 0.3rem;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 0.25rem;
     justify-items: center;
 }
 .roulette-bet-list { list-style: none; padding: 0; margin: 0.5rem 0; }
 .roulette-bet-list li { padding: 0.25rem 0; border-bottom: 1px solid rgba(41, 182, 246, 0.15); }
 .roulette-bet-form select { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--panel-light); color: var(--bg); }
+
+/* Bet selection and the number-layout reference sit side by side (David
+   asked for the layout to move next to the bet form, not below the
+   whole cabinet) -- wraps to stacked on narrow viewports since this
+   lives inside the already-responsive .game-layout. */
+.roulette-bet-row {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+.roulette-bet-row .roulette-bet-form { flex: 1 1 auto; }
+.roulette-bet-row .roulette-wheel-ref {
+    flex: 0 0 auto;
+    width: 260px;
+    margin-top: 0;
+}
 
 /* --- game-select landing page --- */
 .play-select { text-align: center; max-width: 700px; margin: 2rem auto; }

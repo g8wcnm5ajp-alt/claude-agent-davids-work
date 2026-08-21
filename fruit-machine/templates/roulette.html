@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Roulette{% endblock %}
+{% block brand %}🎡 ROULETTE{% endblock %}
 {% block content %}
 <div class="game-layout">
     <div class="machine-panel">
@@ -43,29 +44,40 @@
                     {% else %}
                         <p class="hint">Round #{{ open_round['id'] }} is open for betting.</p>
 
-                        <form method="post" action="{{ url_for('roulette.place_bet') }}" class="inline-form roulette-bet-form">
-                            <label>Bet type
-                                <select name="bet_type" id="bet-type">
-                                    <option value="straight">Straight (single number)</option>
-                                    <option value="color">Red / Black</option>
-                                    <option value="parity">Odd / Even</option>
-                                    <option value="range">Low (1-18) / High (19-36)</option>
-                                    <option value="dozen">Dozen</option>
-                                    <option value="column">Column</option>
-                                </select>
-                            </label>
-                            <label>Value
-                                <select name="bet_value" id="bet-value">
+                        <div class="roulette-bet-row">
+                            <form method="post" action="{{ url_for('roulette.place_bet') }}" class="inline-form roulette-bet-form">
+                                <label>Bet type
+                                    <select name="bet_type" id="bet-type">
+                                        <option value="straight">Straight (single number)</option>
+                                        <option value="color">Red / Black</option>
+                                        <option value="parity">Odd / Even</option>
+                                        <option value="range">Low (1-18) / High (19-36)</option>
+                                        <option value="dozen">Dozen</option>
+                                        <option value="column">Column</option>
+                                    </select>
+                                </label>
+                                <label>Value
+                                    <select name="bet_value" id="bet-value">
+                                        {% for n in numbers %}
+                                            <option value="{{ n }}">{{ n }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </label>
+                                <label>Amount
+                                    <input type="number" name="amount" min="1" value="{{ [user['tokens'], 10] | min }}" max="{{ user['tokens'] }}" required>
+                                </label>
+                                <button type="submit" class="btn btn-gold" {% if user['tokens'] < 1 %}disabled{% endif %}>PLACE BET</button>
+                            </form>
+
+                            <div class="payout-table roulette-wheel-ref">
+                                <h2>Table Layout</h2>
+                                <div class="roulette-grid">
                                     {% for n in numbers %}
-                                        <option value="{{ n }}">{{ n }}</option>
+                                        <span class="roulette-number roulette-{{ number_color(n) }}">{{ n }}</span>
                                     {% endfor %}
-                                </select>
-                            </label>
-                            <label>Amount
-                                <input type="number" name="amount" min="1" value="{{ [user['tokens'], 10] | min }}" max="{{ user['tokens'] }}" required>
-                            </label>
-                            <button type="submit" class="btn btn-gold" {% if user['tokens'] < 1 %}disabled{% endif %}>PLACE BET</button>
-                        </form>
+                                </div>
+                            </div>
+                        </div>
                         <p class="hint">Payouts: straight 35:1, dozen/column 2:1, red-black/odd-even/low-high 1:1 (stake returned too). The Value list changes to match whichever bet type you pick.</p>
 
                         <h3>Players at the table</h3>
@@ -117,15 +129,6 @@
 
                     <div class="token-count">Tokens: <strong>{{ user['tokens'] }}</strong></div>
                 </div>
-            </div>
-        </div>
-
-        <div class="payout-table roulette-wheel-ref">
-            <h2>Table Layout</h2>
-            <div class="roulette-grid">
-                {% for n in numbers %}
-                    <span class="roulette-number roulette-{{ number_color(n) }}">{{ n }}</span>
-                {% endfor %}
             </div>
         </div>
     </div>
