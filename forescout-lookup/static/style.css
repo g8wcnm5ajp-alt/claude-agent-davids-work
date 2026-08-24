@@ -1,0 +1,134 @@
+:root {
+    --bg: #0f1420;
+    --panel: #171e2d;
+    --border: #2a3346;
+    --text: #e4e8f1;
+    --muted: #8b95ab;
+    --accent: #5b9dff;
+    --wired: #4fb477;
+    --wireless: #c98fe0;
+    --both: #e0a850;
+    --undetermined: #8b95ab;
+    --err: #e05f5f;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 2rem 1rem;
+}
+
+main {
+    max-width: 1500px;
+    margin: 0 auto;
+}
+
+h1 { margin-bottom: 0.2rem; }
+.subtitle { color: var(--muted); margin-top: 0; }
+
+.lookup-form {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1.5rem 0;
+}
+
+input[type="text"], select {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 1rem;
+}
+
+input[type="text"] { flex: 1; }
+
+button {
+    background: var(--accent);
+    color: #0b1220;
+    border: none;
+    padding: 0.5rem 1.1rem;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+}
+button:hover { opacity: 0.9; }
+
+.error {
+    background: rgba(224, 95, 95, 0.12);
+    border: 1px solid var(--err);
+    color: var(--err);
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin: 1rem 0;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+}
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+}
+.card h3 { margin-top: 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+
+.verdict {
+    font-size: 0.65em;
+    text-transform: uppercase;
+    padding: 0.15em 0.6em;
+    border-radius: 999px;
+    vertical-align: middle;
+    margin-left: 0.5em;
+}
+.verdict-wired { background: rgba(79, 180, 119, 0.18); color: var(--wired); }
+.verdict-wireless { background: rgba(201, 143, 224, 0.18); color: var(--wireless); }
+.verdict-both { background: rgba(224, 168, 80, 0.18); color: var(--both); }
+.verdict-undetermined { background: rgba(139, 149, 171, 0.18); color: var(--undetermined); }
+
+.muted { color: var(--muted); font-weight: 400; font-size: 0.8em; }
+
+table.params { margin: 0.4rem 0 0 0; font-size: 0.82rem; max-width: 480px; }
+table.params td { word-break: break-all; max-width: 380px; }
+
+.tree-filter-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; color: var(--muted); margin-bottom: 0.5rem; flex-wrap: wrap; }
+.tree-filter-toggle input { margin-right: 0.4em; }
+#tree-window-status { margin-left: 0.5rem; }
+#policy-tree { font-size: 0.9rem; max-height: 480px; overflow-y: auto; }
+#policy-tree details { margin-left: 1rem; }
+#policy-tree summary { cursor: pointer; }
+.tree-label { padding: 1px 4px; border-radius: 4px; }
+.tree-rule { color: var(--accent); }
+.tree-inner_rule { color: var(--muted); }
+.tree-highlight { background: rgba(224, 168, 80, 0.35); color: var(--text); font-weight: 700; }
+.tree-path { background: rgba(224, 168, 80, 0.12); border-left: 2px solid var(--both); padding-left: 2px; }
+
+.actions .inline-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 1rem 0.5rem 0;
+}
+.hint { color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; }
+
+.conn-badge { font-size: 0.72em; text-transform: uppercase; padding: 0.15em 0.55em; border-radius: 999px; }
+.conn-current { background: rgba(79, 180, 119, 0.18); color: var(--wired); }
+.conn-prior { background: rgba(139, 149, 171, 0.18); color: var(--muted); }
+.conn-unknown { color: var(--muted); }
+tr.row-prior-connection { opacity: 0.55; }
+
+.tabs { display: flex; gap: 0.4rem; margin: 1.25rem 0 0.5rem; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0.6rem; }
+.tab-btn { background: var(--panel); color: var(--muted); border: 1px solid var(--border); font-weight: 600; }
+.tab-btn.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+.tab-panel-hidden { display: none; }

@@ -1,0 +1,4 @@
+forescout-lookup/keys/
+forescout-lookup/data/
+__pycache__/
+*.pyc

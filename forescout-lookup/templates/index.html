@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Forescout Host Lookup</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main>
+        <h1>Forescout Host Lookup</h1>
+        <p class="subtitle">Single or multi-IP lookup (comma-separated), routed through the EM's restricted query wrapper.</p>
+
+        <form method="post" action="/lookup" class="lookup-form">
+            <input type="text" name="ip" placeholder="192.168.22.135 or 192.168.22.135,192.168.22.51" value="{{ ip }}" required
+                   pattern="^\s*(\d{1,3}\.){3}\d{1,3}\s*(,\s*(\d{1,3}\.){3}\d{1,3}\s*)*$"
+                   title="One or more IPv4 addresses, comma-separated">
+            <button type="submit">Look up</button>
+        </form>
+
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+
+        {% if scheduled_jobs %}
+        <div class="card">
+            <h3>Scheduled debug <span class="muted">(future-dated starts, not yet fired)</span></h3>
+            <table>
+                <tr><th>IP</th><th>Plugins</th><th>Starts</th><th></th></tr>
+                {% for job in scheduled_jobs %}
+                <tr>
+                    <td>{{ job.ip }}</td>
+                    <td>{{ job.spec_display }}</td>
+                    <td>{{ job.start_display }}</td>
+                    <td>
+                        <form method="post" action="/scheduled/cancel" class="inline-form">
+                            <input type="hidden" name="job_id" value="{{ job.id }}">
+                            <button type="submit">Cancel</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+
+        {% if results %}
+        {% for entry in results %}
+            {% if entry.error %}
+            <div class="error">{{ entry.ip }}: {{ entry.error }}</div>
+            {% endif %}
+        {% endfor %}
+
+        {% set successful = results|selectattr('result')|list %}
+        {% set tabbed = successful|length > 1 %}
+        {% if tabbed %}
+        <div class="tabs">
+            {% for entry in successful %}
+            <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" data-tab-target="{{ entry.result.ip|replace('.', '-') }}">{{ entry.result.ip }}</button>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% for entry in successful %}
+            {% set result = entry.result %}
+            {% set slug = result.ip|replace('.', '-') %}
+            <section class="result{% if tabbed %} tab-panel{% if not loop.first %} tab-panel-hidden{% endif %}{% endif %}" data-tab-panel="{{ slug }}">
+                <h2>{{ result.ip }} <span class="verdict verdict-{{ result.wired_or_wireless }}">{{ result.wired_or_wireless }}</span></h2>
+
+                <div class="grid">
+                    <div class="card">
+                        <h3>Identity</h3>
+                        <table>
+                            <tr><th>MAC</th><td>{{ result.mac or '—' }}{% if result.mac_source_appliance %} <span class="muted">(via {{ result.mac_source_appliance }})</span>{% endif %}</td></tr>
+                            <tr><th>Managing appliance</th><td>{{ result.managing_appliance }}</td></tr>
+                            <tr><th>Domain managed</th><td>{{ result.domain_managed }}</td></tr>
+                            <tr><th>SecureConnector managed</th><td>{{ result.secureconnector_managed }}</td></tr>
+                            <tr><th>Online</th><td>{{ result.online or '—' }}</td></tr>
+                            <tr><th>Onsite</th><td>{{ result.onsite or '—' }}</td></tr>
+                            <tr><th>Active</th><td>{{ result.active or '—' }}</td></tr>
+                            <tr><th>Current connection since</th><td>{{ result.connection_since or 'unknown' }}</td></tr>
+                        </table>
+                    </div>
+
+                    {% if result.location.wired %}
+                    <div class="card">
+                        <h3>Wired location</h3>
+                        <table>
+                            <tr><th>Switch</th><td>{{ result.location.wired.switch_hostname or '—' }} ({{ result.location.wired.switch_ip or '—' }})</td></tr>
+                            <tr><th>Port</th><td>{{ result.location.wired.port or '—' }}</td></tr>
+                            <tr><th>VLAN</th><td>{{ result.location.wired.vlan or '—' }}</td></tr>
+                            <tr><th>Port status</th><td>{{ result.location.wired.port_status or '—' }} / {{ result.location.wired.port_connected or '—' }}</td></tr>
+                        </table>
+                    </div>
+                    {% endif %}
+
+                    {% if result.location.wireless %}
+                    <div class="card">
+                        <h3>Wireless location</h3>
+                        <table>
+                            <tr><th>SSID</th><td>{{ result.location.wireless.ssid or '—' }}</td></tr>
+                            <tr><th>AP</th><td>{{ result.location.wireless.ap or '—' }}</td></tr>
+                            <tr><th>WLC</th><td>{{ result.location.wireless.wlc or '—' }}{% if result.location.wireless.wlc_source == 'wireless_plugin_config' %} <span class="muted">(from plugin config)</span>{% endif %}</td></tr>
+                            <tr><th>Client status</th><td>{{ result.location.wireless.client_status or '—' }}</td></tr>
+                        </table>
+                    </div>
+                    {% endif %}
+                </div>
+
+                {% if result.arp_list %}
+                <div class="card">
+                    <h3>ARP decode</h3>
+                    <table id="arp-decode-table-{{ slug }}" data-ip="{{ result.ip }}"
+                           data-initial-rows="{{ result.arp_list|tojson|forceescape }}">
+                        <tr><th>Appliance</th><th>ARP source</th><th>Resolved IP</th><th>MAC</th><th>Vendor</th><th>ARP resolved</th><th>MAC resolved</th><th>Last checked</th></tr>
+                        {% for a in result.arp_list %}
+                        <tr>
+                            <td>{{ a.appliance }}</td><td>{{ a.arp_source }}</td><td>{{ a.resolved_ip }}</td>
+                            <td>{{ a.mac }}</td><td>{{ a.vendor or '—' }}</td>
+                            <td>{{ a.arp_resolved or '—' }}</td><td>{{ a.mac_resolved or '—' }}</td>
+                            <td class="arp-last-checked"></td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                    <p class="hint" id="arp-refresh-status-{{ slug }}"></p>
+                </div>
+                {% endif %}
+
+                <div class="card">
+                    <h3>Policy match history <span class="muted">(fleet-health noise filtered out)</span></h3>
+                    <p class="hint">Current connection since: <strong>{{ result.connection_since or 'unknown' }}</strong> — rows from an earlier connection (e.g. a prior wired session before the host moved to its current medium) are dimmed and marked <span class="conn-badge conn-prior">prior</span>.</p>
+                    <div class="tree-filter-row">
+                        <label class="tree-filter-toggle">Showing matches from the last</label>
+                        <input type="number" id="history-window-value-{{ slug }}" value="24" min="1" max="9999" step="1" style="width:4.5em">
+                        <select id="history-window-unit-{{ slug }}">
+                            <option value="h" selected>Hour(s)</option>
+                            <option value="d">Day(s)</option>
+                            <option value="w">Week(s)</option>
+                        </select>
+                        <label class="tree-filter-toggle">Cleared</label>
+                        <select id="history-cleared-filter-{{ slug }}">
+                            <option value="all" selected>All</option>
+                            <option value="true">True</option>
+                            <option value="false">False</option>
+                        </select>
+                        <span class="muted" id="history-window-status-{{ slug }}"></span>
+                    </div>
+                    <table id="policy-history-table-{{ slug }}" data-ip="{{ result.ip }}"
+                           data-initial-rows="{{ result.policy_history|tojson|forceescape }}">
+                        <tr><th>Time (UTC)</th><th>Action</th><th>Rule</th><th>Cleared</th><th>Change</th><th>Appliance</th><th>Connection</th></tr>
+                        {% for row in result.policy_history %}
+                        <tr class="{{ 'row-prior-connection' if row.current_connection == false else '' }}">
+                            <td>{{ row.time }}</td>
+                            <td>{{ row.action }}</td>
+                            <td>{{ row.rule }}</td>
+                            <td>{{ "yes" if row.cleared else "no" }}{% if row.clear_reason %} ({{ row.clear_reason }}){% endif %}</td>
+                            <td>{{ (row.change or '—')|replace('\t', ' | ') }}</td>
+                            <td>{{ row.appliance or '—' }} <span class="muted">({{ row.node_id or '—' }})</span></td>
+                            <td>
+                                {% if row.current_connection == true %}<span class="conn-badge conn-current">current</span>
+                                {% elif row.current_connection == false %}<span class="conn-badge conn-prior">prior</span>
+                                {% else %}<span class="conn-badge conn-unknown">—</span>{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                </div>
+
+                <div class="card">
+                    <h3>Policy tree <span class="muted">(NINHS -- last-checked rule(s) highlighted)</span></h3>
+                    <div class="tree-filter-row">
+                        <label class="tree-filter-toggle">
+                            <input type="checkbox" id="tree-filter-{{ slug }}" checked>
+                            Show only policies matched within the last
+                        </label>
+                        <input type="number" id="tree-window-value-{{ slug }}" value="24" min="1" max="9999" step="1" style="width:4.5em">
+                        <select id="tree-window-unit-{{ slug }}">
+                            <option value="h" selected>Hour(s)</option>
+                            <option value="d">Day(s)</option>
+                            <option value="w">Week(s)</option>
+                        </select>
+                        <span class="muted" id="tree-window-status-{{ slug }}"></span>
+                    </div>
+                    <div id="policy-tree-{{ slug }}" data-ip="{{ result.ip }}" data-initial-ids="{{ result.last_checked.rule_ids|tojson|forceescape }}">
+                        Loading tree…
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Raw fields <span class="muted">(the full `fstool hostinfo` property dump -- {{ result.raw_field_count }} fields total)</span></h3>
+                    <button type="button" id="rawfields-load-btn-{{ slug }}">Load raw fields</button>
+                    <div id="rawfields-controls-{{ slug }}" class="tree-filter-row" style="display:none; margin-top:0.75rem;">
+                        <input type="text" id="rawfields-search-{{ slug }}" placeholder="Filter field names, e.g. dhcp" style="flex:1; min-width:200px;">
+                        <select id="rawfields-mode-{{ slug }}">
+                            <option value="all" selected>All fields</option>
+                            <option value="matched">Matched only (has a real value)</option>
+                            <option value="unmatched">Unmatched only (??? / error)</option>
+                        </select>
+                        <span class="muted" id="rawfields-status-{{ slug }}"></span>
+                    </div>
+                    <div id="rawfields-table-wrap-{{ slug }}" style="max-height: 480px; overflow-y: auto; margin-top: 0.5rem;">
+                        <table id="rawfields-table-{{ slug }}"><tr><th>Field</th><th>Value</th><th>Source</th><th>Appliance</th><th>Time</th></tr></table>
+                    </div>
+                    <p class="hint" id="rawfields-refresh-status-{{ slug }}"></p>
+                </div>
+
+                <div class="card actions">
+                    <h3>Actions</h3>
+                    <h4>Debug</h4>
+                    <form method="post" action="/debugset" class="debug-form" id="debugset-form-{{ slug }}">
+                        <input type="hidden" name="ip" value="{{ result.ip }}">
+                        <input type="hidden" name="time_mode" id="debugset-time-mode-{{ slug }}" value="duration">
+                        <input type="hidden" name="start_epoch" id="debugset-start-epoch-{{ slug }}">
+                        <input type="hidden" name="end_epoch" id="debugset-end-epoch-{{ slug }}">
+
+                        <div class="tree-filter-row">
+                            <label class="tree-filter-toggle">
+                                <input type="radio" name="time_mode_ui_{{ slug }}" id="debugset-mode-duration-{{ slug }}" value="duration" checked>
+                                Duration
+                            </label>
+                            <label class="tree-filter-toggle">
+                                <input type="radio" name="time_mode_ui_{{ slug }}" id="debugset-mode-window-{{ slug }}" value="window">
+                                Start/End time
+                            </label>
+                        </div>
+
+                        <div class="tree-filter-row" id="debugset-duration-row-{{ slug }}">
+                            <label class="tree-filter-toggle">Duration (min), applied to every checked plugin
+                                <input type="number" name="duration_minutes" value="60" min="1" max="1440" step="1" style="width:5em">
+                            </label>
+                        </div>
+
+                        <div class="tree-filter-row" id="debugset-window-row-{{ slug }}" style="display:none;">
+                            <label class="tree-filter-toggle">Start <input type="datetime-local" id="debugset-start-{{ slug }}"></label>
+                            <label class="tree-filter-toggle">End <input type="datetime-local" id="debugset-end-{{ slug }}"></label>
+                        </div>
+
+                        <table class="debug-config-table">
+                            <tr><th></th><th>Plugin</th><th>Appliance</th><th>Level</th></tr>
+                            {% for t in result.debug_targets %}
+                            <tr>
+                                <td><input type="checkbox" name="include_{{ t.plugin }}" value="1" checked></td>
+                                <td><code>{{ t.plugin }}</code></td>
+                                <td><code>{{ t.target }}</code></td>
+                                <td>
+                                    <select name="level_{{ t.plugin }}">
+                                        {% for lvl in range(0, 13) %}
+                                        <option value="{{ lvl }}" {% if lvl == 4 %}selected{% endif %}>{{ lvl }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </table>
+                        <button type="submit" name="mode" value="start">Start debug</button>
+                        <button type="submit" name="mode" value="stop">Stop debug now</button>
+                        <p class="hint">Unchecking a plugin excludes it entirely from either button -- its level/duration are ignored, not just skipped.</p>
+                        <p class="hint">Start/End time covers past and future. Both in the past: builds a historical tech-support bundle instead of live debug (debug can't be backdated). Start now-or-earlier, end in the future: starts immediately, runs until the end time. Start in the future: genuinely scheduled, begins exactly then.</p>
+                    </form>
+                    <form method="post" action="/techsupport" class="inline-form">
+                        <input type="hidden" name="ip" value="{{ result.ip }}">
+                        <button type="submit">Build tech-support bundle</button>
+                    </form>
+                    <p class="hint">Tech-support builds are refused while a debug window is still active on a relevant plugin — stop debug (or wait it out), then build.</p>
+                </div>
+            </section>
+        {% endfor %}
+        {% endif %}
+
+        {% if result and action == "debugset" %}
+        <section class="result">
+            <h2>Debug updated — {{ result.ip }}</h2>
+            <div class="card">
+                <table>
+                    <tr><th>Plugin</th><th>Target</th><th>Level</th><th>Duration</th><th>Result</th></tr>
+                    {% for d in result.debug_set %}
+                    <tr><td>{{ d.plugin }}</td><td>{{ d.target }}</td><td>{{ d.level }}</td><td>{{ d.minutes }} min</td><td>{{ "ok" if d.ok else "failed" }} — {{ d.output }}</td></tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        {% if result and action == "debugscheduled" %}
+        <section class="result">
+            <h2>Debug scheduled — {{ result.ip }}</h2>
+            <div class="card">
+                <p>Starts <strong>{{ result.start_display }}</strong>, ends <strong>{{ result.end_display }}</strong>. See the Scheduled debug card above for a cancel button.</p>
+                <p class="hint">fstool has no native delayed start -- this app's own scheduler will fire the enable command at the start time, then let fstool's own duration handle the end.</p>
+            </div>
+        </section>
+        {% endif %}
+
+        {% if result and action == "techsupport" %}
+        <section class="result">
+            <h2>Tech-support bundle(s) — {{ result.ip }} <span class="verdict verdict-{{ result.wired_or_wireless }}">{{ result.wired_or_wireless }}</span></h2>
+            <div class="card">
+                <table>
+                    <tr><th>Plugin</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th></tr>
+                    {% for b in result.bundles %}
+                    <tr><td>{{ b.plugin }}</td><td>{{ b.target }}</td><td>{{ "ok" if b.ok else "failed" }}</td><td>{{ b.path or '—' }}</td><td>{{ b.size or '—' }}</td></tr>
+                    {% endfor %}
+                </table>
+                <p class="hint">Bundles are built and reported, not auto-downloaded — retrieve manually per the [[Tech-Support Bundle Collection]] runbook.</p>
+            </div>
+        </section>
+        {% endif %}
+    </main>
+
+    {% if results %}
+    {% set successful = results|selectattr('result')|list %}
+    {% for entry in successful %}
+        {% set result = entry.result %}
+        {% set slug = result.ip|replace('.', '-') %}
+        <script>
+        // Renders the NINHS policy tree client-side (fetched once) and
+        // highlights whichever rule(s) were most recently evaluated for
+        // this host. No auto-refresh -- an earlier version polled every
+        // ~7s and re-ran the highlight (including an auto-scroll), which
+        // kept yanking the view back to the matched node while browsing
+        // elsewhere in the tree. Fixed by making this a one-shot render;
+        // reload the page for a fresh check instead.
+        //
+        // This whole block is emitted once per looked-up IP (see the
+        // surrounding Jinja loop) with every element id suffixed by that
+        // IP's slug ("{{ slug }}") -- required once multi-IP lookups can
+        // put more than one of these tables/trees on the same page;
+        // otherwise every getElementById would resolve to only the
+        // first IP's element.
+        (function () {
+            const ip = "{{ result.ip }}";
+            const container = document.getElementById("policy-tree-{{ slug }}");
+            const filterCheckbox = document.getElementById("tree-filter-{{ slug }}");
+            const windowValue = document.getElementById("tree-window-value-{{ slug }}");
+            const windowUnit = document.getElementById("tree-window-unit-{{ slug }}");
+            const windowStatus = document.getElementById("tree-window-status-{{ slug }}");
+            let initialIds = [];
+            try { initialIds = JSON.parse(container.dataset.initialIds || "[]"); } catch (e) {}
+            let matchedSet = new Set();
+            let fullTree = null;
+
+            function currentWindow() {
+                const n = parseInt(windowValue.value, 10);
+                return (n > 0 ? n : 1) + windowUnit.value;
+            }
+
+            // Real time-bounded EM query each time the window changes (see
+            // /api/matched) -- not a client-side filter over the policy
+            // history table, which only ever shows the 40 most-recent rows
+            // and would silently under-report a wide window like "2 weeks".
+            function fetchMatchedAndRender() {
+                const w = currentWindow();
+                windowStatus.textContent = "loading…";
+                fetch("/api/matched/" + ip + "?window=" + encodeURIComponent(w))
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) { windowStatus.textContent = "error: " + d.error; return; }
+                        matchedSet = new Set(d.rule_ids || []);
+                        windowStatus.textContent = matchedSet.size + " matched rule(s) in this window";
+                        render();
+                    })
+                    .catch(err => { windowStatus.textContent = "failed to load: " + err; });
+            }
+
+            function buildNode(node) {
+                const isLeaf = node.type !== "folder";
+                const wrapper = document.createElement(isLeaf && node.children.length === 0 ? "div" : "details");
+                if (wrapper.tagName === "DETAILS") wrapper.open = false;
+
+                const label = document.createElement(wrapper.tagName === "DETAILS" ? "summary" : "span");
+                label.textContent = node.name + (node.type === "rule" && !node.enabled ? " (disabled)" : "")
+                    + (node.type === "inner_rule" && node.action_enabled ? " ●" : "");
+                label.className = "tree-label tree-" + node.type;
+                label.dataset.ruleId = node.id || "";
+                wrapper.appendChild(label);
+
+                (node.children || []).forEach(child => wrapper.appendChild(buildNode(child)));
+                return wrapper;
+            }
+
+            // Prunes the tree down to: rule nodes that are both enabled
+            // AND in matchedSet, inner_rule nodes in matchedSet, and any
+            // folder that still has a surviving descendant after that --
+            // empty branches are dropped entirely rather than shown open
+            // with nothing relevant inside. Returns null if this node (or
+            // everything under it) doesn't survive the filter.
+            function filterNode(node) {
+                if (node.type === "folder") {
+                    const kept = (node.children || []).map(filterNode).filter(Boolean);
+                    if (kept.length === 0) return null;
+                    return { ...node, children: kept };
+                }
+                if (node.type === "rule") {
+                    if (!node.enabled || !matchedSet.has(node.id)) return null;
+                    const kept = (node.children || []).filter(c => matchedSet.has(c.id));
+                    return { ...node, children: kept };
+                }
+                // inner_rule: no children, keep only if matched
+                return matchedSet.has(node.id) ? node : null;
+            }
+
+            function applyHighlight(ids) {
+                container.querySelectorAll(".tree-highlight, .tree-path")
+                    .forEach(el => el.classList.remove("tree-highlight", "tree-path"));
+                let firstMatch = null;
+                ids.forEach(id => {
+                    const el = container.querySelector('[data-rule-id="' + id + '"]');
+                    if (!el) return;
+                    if (!firstMatch) firstMatch = el;
+                    el.classList.add("tree-highlight");
+                    // Highlight every ancestor folder/rule's own label too, not
+                    // just the matched leaf -- this shows *which branch of the
+                    // tree* matched, not just a single node buried deep.
+                    let node = el.closest("details");
+                    while (node) {
+                        node.open = true;
+                        const ownLabel = node.querySelector(":scope > summary");
+                        if (ownLabel && ownLabel !== el) ownLabel.classList.add("tree-path");
+                        node = node.parentElement ? node.parentElement.closest("details") : null;
+                    }
+                });
+                if (firstMatch) firstMatch.scrollIntoView({ block: "center" });
+            }
+
+            function render() {
+                if (!fullTree) return;
+                const filtered = filterCheckbox.checked;
+                const treeToShow = filtered ? filterNode(fullTree) : fullTree;
+                container.textContent = "";
+                if (!treeToShow) {
+                    container.textContent = "No matched, enabled policies found for this host.";
+                    return;
+                }
+                container.appendChild(buildNode(treeToShow));
+                applyHighlight(initialIds);
+            }
+
+            filterCheckbox.addEventListener("change", render);
+            windowValue.addEventListener("change", fetchMatchedAndRender);
+            windowUnit.addEventListener("change", fetchMatchedAndRender);
+
+            fetch("/api/policytree")
+                .then(r => r.json())
+                .then(tree => {
+                    if (tree.error) { container.textContent = "Error: " + tree.error; return; }
+                    fullTree = tree;
+                    fetchMatchedAndRender();
+                })
+                .catch(err => { container.textContent = "Failed to load policy tree: " + err; });
+        })();
+
+        // Policy match history's adjustable time period -- a real
+        // time-bounded EM query per change (see /api/history), same
+        // pattern as the tree's matched-window control above. The Cleared
+        // filter (All/True/False) is client-side over whatever's already
+        // loaded -- no extra round trip, same approach as the raw fields
+        // browser's All/Matched/Unmatched split.
+        (function () {
+            const ip = "{{ result.ip }}";
+            const table = document.getElementById("policy-history-table-{{ slug }}");
+            const windowValue = document.getElementById("history-window-value-{{ slug }}");
+            const windowUnit = document.getElementById("history-window-unit-{{ slug }}");
+            const clearedFilter = document.getElementById("history-cleared-filter-{{ slug }}");
+            const status = document.getElementById("history-window-status-{{ slug }}");
+            let lastRows = [];
+            try { lastRows = JSON.parse(table.dataset.initialRows || "[]"); } catch (e) {}
+
+            function escapeHtml(s) {
+                return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            function render() {
+                const f = clearedFilter.value;
+                const rows = lastRows.filter(row => {
+                    if (f === "true") return row.cleared === true;
+                    if (f === "false") return row.cleared === false;
+                    return true;
+                });
+                status.textContent = rows.length + " of " + lastRows.length + " row(s)";
+                const body = rows.map(row => {
+                    const connBadge = row.current_connection === true
+                        ? '<span class="conn-badge conn-current">current</span>'
+                        : row.current_connection === false
+                        ? '<span class="conn-badge conn-prior">prior</span>'
+                        : '<span class="conn-badge conn-unknown">—</span>';
+                    const rowClass = row.current_connection === false ? ' class="row-prior-connection"' : '';
+                    return (
+                        "<tr" + rowClass + "><td>" + escapeHtml(row.time) + "</td>" +
+                        "<td>" + escapeHtml(row.action) + "</td>" +
+                        "<td>" + escapeHtml(row.rule) + "</td>" +
+                        "<td>" + (row.cleared ? "yes" : "no") + (row.clear_reason ? " (" + escapeHtml(row.clear_reason) + ")" : "") + "</td>" +
+                        "<td>" + escapeHtml((row.change || "—").replace(/\t/g, " | ")) + "</td>" +
+                        "<td>" + escapeHtml(row.appliance || "—") + ' <span class="muted">(' + escapeHtml(row.node_id || "—") + ")</span></td>" +
+                        "<td>" + connBadge + "</td></tr>"
+                    );
+                }).join("");
+                table.querySelectorAll("tr:not(:first-child)").forEach(tr => tr.remove());
+                table.insertAdjacentHTML("beforeend", body);
+            }
+
+            function fetchAndRender() {
+                const n = parseInt(windowValue.value, 10);
+                const w = (n > 0 ? n : 1) + windowUnit.value;
+                status.textContent = "loading…";
+                fetch("/api/history/" + ip + "?window=" + encodeURIComponent(w))
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) { status.textContent = "error: " + d.error; return; }
+                        lastRows = d.policy_history || [];
+                        render();
+                    })
+                    .catch(err => { status.textContent = "failed to load: " + err; });
+            }
+
+            windowValue.addEventListener("change", fetchAndRender);
+            windowUnit.addEventListener("change", fetchAndRender);
+            clearedFilter.addEventListener("change", render);
+        })();
+
+        // ARP decode table auto-refresh. Unlike the policy tree's earlier
+        // auto-poll (removed -- see above -- because it kept yanking the
+        // view back during manual navigation), this table has no
+        // navigable/interactive state to disrupt, so periodic replacement
+        // is safe. 30s interval is a reasonable default, not confirmed
+        // with David. The table is only actually touched when the fetched
+        // data differs from what's already shown -- David's ask, so a
+        // no-op poll doesn't churn the DOM or reset anything a reader
+        // might be doing (e.g. selecting text) for no reason.
+        (function () {
+            const table = document.getElementById("arp-decode-table-{{ slug }}");
+            if (!table) return;
+            const ip = "{{ result.ip }}";
+            const status = document.getElementById("arp-refresh-status-{{ slug }}");
+            let lastJson = null;
+            try { lastJson = JSON.stringify(JSON.parse(table.dataset.initialRows || "[]")); } catch (e) {}
+
+            function escapeHtml(s) {
+                return (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            // "Last checked" is when this app last confirmed the row's data
+            // (every poll, whether or not anything changed) -- distinct from
+            // ARP/MAC resolved, which is when Forescout itself last updated
+            // that data on its side. Updated on every tick regardless of the
+            // no-op skip below, so it stays a true poll-recency indicator.
+            function stampLastChecked() {
+                const now = new Date().toLocaleTimeString();
+                table.querySelectorAll(".arp-last-checked").forEach(td => { td.textContent = now; });
+                return now;
+            }
+
+            function fetchAndRender() {
+                fetch("/api/arplist/" + ip)
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) { status.textContent = "auto-refresh error: " + d.error; return; }
+                        const arp = d.arp_list || [];
+                        const newJson = JSON.stringify(arp);
+                        if (newJson === lastJson) {
+                            const checked = stampLastChecked();
+                            status.textContent = "auto-updates every 30s — no change (checked " + checked + ")";
+                            return;
+                        }
+                        lastJson = newJson;
+                        const checked = new Date().toLocaleTimeString();
+                        const rows = arp.map(a => (
+                            "<tr><td>" + escapeHtml(a.appliance) + "</td>" +
+                            "<td>" + escapeHtml(a.arp_source) + "</td>" +
+                            "<td>" + escapeHtml(a.resolved_ip) + "</td>" +
+                            "<td>" + escapeHtml(a.mac) + "</td>" +
+                            "<td>" + escapeHtml(a.vendor || "—") + "</td>" +
+                            "<td>" + escapeHtml(a.arp_resolved || "—") + "</td>" +
+                            "<td>" + escapeHtml(a.mac_resolved || "—") + "</td>" +
+                            "<td class=\"arp-last-checked\">" + checked + "</td></tr>"
+                        )).join("");
+                        table.querySelectorAll("tr:not(:first-child)").forEach(tr => tr.remove());
+                        table.insertAdjacentHTML("beforeend", rows);
+                        status.textContent = "auto-updates every 30s — updated " + checked;
+                    })
+                    .catch(err => { status.textContent = "auto-refresh failed: " + err; });
+            }
+
+            stampLastChecked();
+            status.textContent = "auto-updates every 30s";
+            setInterval(fetchAndRender, 30000);
+        })();
+
+        // Debug config: Duration vs Start/End time toggle. Which of three
+        // paths a Start/End submission actually takes (historical bundle /
+        // start-now-run-to-end / genuinely scheduled future start) depends
+        // on "now" at submit time on the server, not duplicated here --
+        // this only toggles the UI and converts the two datetime-local
+        // inputs (no timezone of their own) into epoch seconds using the
+        // browser's own local timezone before the form submits.
+        (function () {
+            const form = document.getElementById("debugset-form-{{ slug }}");
+            const radioDuration = document.getElementById("debugset-mode-duration-{{ slug }}");
+            const radioWindow = document.getElementById("debugset-mode-window-{{ slug }}");
+            const durationRow = document.getElementById("debugset-duration-row-{{ slug }}");
+            const windowRow = document.getElementById("debugset-window-row-{{ slug }}");
+            const startInput = document.getElementById("debugset-start-{{ slug }}");
+            const endInput = document.getElementById("debugset-end-{{ slug }}");
+            const timeModeField = document.getElementById("debugset-time-mode-{{ slug }}");
+            const startEpochField = document.getElementById("debugset-start-epoch-{{ slug }}");
+            const endEpochField = document.getElementById("debugset-end-epoch-{{ slug }}");
+
+            function applyMode() {
+                const isWindow = radioWindow.checked;
+                windowRow.style.display = isWindow ? "flex" : "none";
+                durationRow.style.display = isWindow ? "none" : "flex";
+                timeModeField.value = isWindow ? "window" : "duration";
+            }
+            radioDuration.addEventListener("change", applyMode);
+            radioWindow.addEventListener("change", applyMode);
+            applyMode();
+
+            form.addEventListener("submit", (e) => {
+                // "Stop debug now" is always immediate regardless of
+                // time_mode -- only "Start debug" in window mode needs
+                // start/end populated.
+                const clickedStop = e.submitter && e.submitter.value === "stop";
+                if (clickedStop || !radioWindow.checked) return;
+                if (!startInput.value || !endInput.value) {
+                    e.preventDefault();
+                    window.alert("Set both a start and end time, or switch back to Duration.");
+                    return;
+                }
+                startEpochField.value = Math.floor(new Date(startInput.value).getTime() / 1000);
+                endEpochField.value = Math.floor(new Date(endInput.value).getTime() / 1000);
+            });
+        })();
+
+        // Raw fields browser -- lazy-loaded (a busy host can carry 1000+
+        // fields, too much to fetch on every page load), then filtered
+        // entirely client-side once loaded: substring match on field name,
+        // plus an All/Matched/Unmatched split. "Matched" here means the
+        // field actually resolved to a real value; "Unmatched" means it
+        // shows "???" (the same status-code convention already used
+        // throughout this app and Host Connection Detail Analysis).
+        //
+        // Once loaded, auto-refreshes every 30s -- same dedup approach as
+        // ARP decode: only touches the DOM (re-render under whatever
+        // search/mode filter is currently set) when the fetched field set
+        // actually differs from what's already held, and never starts
+        // polling before the button is clicked (that would defeat the
+        // whole point of lazy-loading a 1000+ field dump).
+        (function () {
+            const ip = "{{ result.ip }}";
+            const loadBtn = document.getElementById("rawfields-load-btn-{{ slug }}");
+            const controls = document.getElementById("rawfields-controls-{{ slug }}");
+            const search = document.getElementById("rawfields-search-{{ slug }}");
+            const mode = document.getElementById("rawfields-mode-{{ slug }}");
+            const status = document.getElementById("rawfields-status-{{ slug }}");
+            const refreshStatus = document.getElementById("rawfields-refresh-status-{{ slug }}");
+            const table = document.getElementById("rawfields-table-{{ slug }}");
+            let allFields = null;
+            let lastJson = null;
+
+            function escapeHtml(s) {
+                return (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            function render() {
+                if (!allFields) return;
+                const q = search.value.trim().toLowerCase();
+                const m = mode.value;
+                const filtered = allFields.filter(f => {
+                    if (q && !f.field.toLowerCase().includes(q)) return false;
+                    const isMatched = f.value !== "???";
+                    if (m === "matched" && !isMatched) return false;
+                    if (m === "unmatched" && isMatched) return false;
+                    return true;
+                });
+                status.textContent = filtered.length + " of " + allFields.length + " field(s)";
+                const rows = filtered.map(f => (
+                    "<tr><td>" + escapeHtml(f.field) + "</td>" +
+                    "<td>" + escapeHtml(f.value) + (f.status && f.value === "???" ? " (" + escapeHtml(f.status) + ")" : "") + "</td>" +
+                    "<td>" + escapeHtml(f.source) + "</td>" +
+                    "<td>" + escapeHtml(f.source_appliance || "—") + "</td>" +
+                    "<td>" + escapeHtml(f.time) + "</td></tr>"
+                )).join("");
+                table.querySelectorAll("tr:not(:first-child)").forEach(tr => tr.remove());
+                table.insertAdjacentHTML("beforeend", rows);
+            }
+
+            function pollForUpdate() {
+                fetch("/api/rawfields/" + ip)
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) { refreshStatus.textContent = "auto-refresh error: " + d.error; return; }
+                        const fields = d.fields || [];
+                        const newJson = JSON.stringify(fields);
+                        const checked = new Date().toLocaleTimeString();
+                        if (newJson === lastJson) {
+                            refreshStatus.textContent = "auto-updates every 30s — no change (checked " + checked + ")";
+                            return;
+                        }
+                        lastJson = newJson;
+                        allFields = fields;
+                        render();
+                        refreshStatus.textContent = "auto-updates every 30s — updated " + checked;
+                    })
+                    .catch(err => { refreshStatus.textContent = "auto-refresh failed: " + err; });
+            }
+
+            loadBtn.addEventListener("click", () => {
+                loadBtn.disabled = true;
+                loadBtn.textContent = "Loading…";
+                fetch("/api/rawfields/" + ip)
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) { status.textContent = "error: " + d.error; loadBtn.disabled = false; loadBtn.textContent = "Load raw fields"; return; }
+                        allFields = d.fields || [];
+                        lastJson = JSON.stringify(allFields);
+                        loadBtn.style.display = "none";
+                        controls.style.display = "flex";
+                        render();
+                        refreshStatus.textContent = "auto-updates every 30s";
+                        setInterval(pollForUpdate, 30000);
+                    })
+                    .catch(err => { status.textContent = "failed to load: " + err; loadBtn.disabled = false; loadBtn.textContent = "Load raw fields"; });
+            });
+
+            search.addEventListener("input", render);
+            mode.addEventListener("change", render);
+        })();
+        </script>
+    {% endfor %}
+
+    <script>
+        // Tab switching for multi-IP lookups (only rendered when more than
+        // one IP resolved) -- purely show/hide via a class toggle; every
+        // per-IP script block above already ran regardless of which tab is
+        // active, so a background tab's ARP/raw-fields auto-refresh keeps
+        // polling even while hidden.
+        document.querySelectorAll(".tab-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const target = btn.dataset.tabTarget;
+                document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+                document.querySelectorAll(".tab-panel").forEach(panel => {
+                    panel.classList.toggle("tab-panel-hidden", panel.dataset.tabPanel !== target);
+                });
+            });
+        });
+    </script>
+    {% endif %}
+</body>
+</html>
