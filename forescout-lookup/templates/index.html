@@ -2,37 +2,89 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Forescout Host Lookup</title>
+    <title>Forescout Tech Support Log Collection Tool</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <main>
-        <h1>Forescout Host Lookup</h1>
+        <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:0.5rem;">
+            <h1 style="margin:0;">Forescout Tech Support Log Collection Tool</h1>
+            <div class="hint">
+                <a href="{{ url_for('certs_route') }}">Certificates</a>
+                &middot; <a href="{{ url_for('change_password_route') }}">Change password</a>
+                &middot; <form method="post" action="{{ url_for('logout_route') }}" style="display:inline;"><button type="submit" class="btn-small btn-secondary">Logout</button></form>
+            </div>
+        </div>
         <p class="subtitle">Single or multi-IP lookup (comma-separated), routed through the EM's restricted query wrapper.</p>
 
+        {% set active_page_tab = "techsupport" if action in ("techsupport", "debugset", "debugscheduled") else "lookup" %}
+        <div class="tabs page-tabs">
+            <button type="button" class="page-tab-btn{% if active_page_tab == "lookup" %} active{% endif %}" data-page-tab-target="lookup">IP Lookup</button>
+            <button type="button" class="page-tab-btn" data-page-tab-target="appliances">Appliances{% if active_appliance_runs %} <span class="page-tab-badge">{{ active_appliance_runs|length }}</span>{% endif %}</button>
+            <button type="button" class="page-tab-btn{% if active_page_tab == "techsupport" %} active{% endif %}" data-page-tab-target="techsupport">Tech Support Bundle Generator</button>
+            <button type="button" class="page-tab-btn" data-page-tab-target="templates">Templates</button>
+            <button type="button" class="page-tab-btn" data-page-tab-target="help">Help</button>
+        </div>
+
+        <section class="page-tab-panel{% if active_page_tab != "lookup" %} page-tab-panel-hidden{% endif %}" data-page-tab-panel="lookup">
         <form method="post" action="/lookup" class="lookup-form">
             <input type="text" name="ip" placeholder="192.168.22.135 or 192.168.22.135,192.168.22.51" value="{{ ip }}" required
                    pattern="^\s*(\d{1,3}\.){3}\d{1,3}\s*(,\s*(\d{1,3}\.){3}\d{1,3}\s*)*$"
                    title="One or more IPv4 addresses, comma-separated">
-            <button type="submit">Look up</button>
+            <button type="submit" id="lookup-submit-btn">Look up</button>
+            <span id="lookup-spinner" class="spinner" style="display:none"></span>
+            {% if results %}
+            <a href="/" class="btn-small btn-secondary" id="lookup-clear-all">Clear results</a>
+            {% endif %}
         </form>
 
-        {% if error %}
+        {% if error and action not in ("techsupport", "debugset", "debugscheduled") %}
         <div class="error">{{ error }}</div>
         {% endif %}
 
         {% if scheduled_jobs %}
         <div class="card">
-            <h3>Scheduled debug <span class="muted">(future-dated starts, not yet fired)</span></h3>
+            <h3>Scheduled debug <span class="muted">(future-dated starts, not yet fired)</span>
+                <form method="post" action="/admin/clear_log/scheduled_jobs" class="inline-form" style="display:inline"
+                    onsubmit="return confirm('Clear all scheduled debug jobs and their history? This also cancels anything not yet fired.');">
+                    <button type="submit" class="btn-small btn-secondary">Clear</button>
+                </form>
+            </h3>
             <table>
-                <tr><th>IP</th><th>Plugins</th><th>Starts</th><th></th></tr>
+                <tr><th>Target</th><th>Plugins</th><th>Starts</th><th></th></tr>
                 {% for job in scheduled_jobs %}
                 <tr>
-                    <td>{{ job.ip }}</td>
+                    <td>{{ job.target }}</td>
                     <td>{{ job.spec_display }}</td>
                     <td>{{ job.start_display }}</td>
                     <td>
                         <form method="post" action="/scheduled/cancel" class="inline-form">
+                            <input type="hidden" name="job_id" value="{{ job.id }}">
+                            <button type="submit">Cancel</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+
+        {% if pending_trace_reverts %}
+        <div class="card">
+            <h3>Pending trace auto-reverts <span class="muted">(back to captured default when due)</span>
+                <form method="post" action="/admin/clear_log/trace_jobs" class="inline-form" style="display:inline"
+                    onsubmit="return confirm('Clear all pending trace auto-reverts and their history? This also cancels anything not yet fired.');">
+                    <button type="submit" class="btn-small btn-secondary">Clear</button>
+                </form>
+            </h3>
+            <table>
+                <tr><th>Target</th><th>Reverts at</th><th></th></tr>
+                {% for job in pending_trace_reverts %}
+                <tr>
+                    <td>{{ job.target }}</td>
+                    <td>{{ job.revert_display }}</td>
+                    <td>
+                        <form method="post" action="/trace/cancel_revert" class="inline-form">
                             <input type="hidden" name="job_id" value="{{ job.id }}">
                             <button type="submit">Cancel</button>
                         </form>
@@ -55,7 +107,10 @@
         {% if tabbed %}
         <div class="tabs">
             {% for entry in successful %}
-            <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" data-tab-target="{{ entry.result.ip|replace('.', '-') }}">{{ entry.result.ip }}</button>
+            {% set is_active_tab = (entry.result.ip == active_ip) if active_ip else loop.first %}
+            <button type="button" class="tab-btn{% if is_active_tab %} active{% endif %}" data-tab-target="{{ entry.result.ip|replace('.', '-') }}">{{ entry.result.ip }}
+                <span class="tab-close" data-close-tab="{{ entry.result.ip|replace('.', '-') }}" title="Remove {{ entry.result.ip }} from this view">&times;</span>
+            </button>
             {% endfor %}
         </div>
         {% endif %}
@@ -63,8 +118,16 @@
         {% for entry in successful %}
             {% set result = entry.result %}
             {% set slug = result.ip|replace('.', '-') %}
-            <section class="result{% if tabbed %} tab-panel{% if not loop.first %} tab-panel-hidden{% endif %}{% endif %}" data-tab-panel="{{ slug }}">
-                <h2>{{ result.ip }} <span class="verdict verdict-{{ result.wired_or_wireless }}">{{ result.wired_or_wireless }}</span></h2>
+            {% set is_active_tab = (result.ip == active_ip) if active_ip else loop.first %}
+            <section class="result{% if tabbed %} tab-panel{% if not is_active_tab %} tab-panel-hidden{% endif %}{% endif %}" data-tab-panel="{{ slug }}">
+                <h2>
+                    {{ result.ip }} <span class="verdict verdict-{{ result.wired_or_wireless }}">{{ result.wired_or_wireless }}</span>
+                    <form method="post" action="/lookup" class="inline-form refresh-ip-form">
+                        <input type="hidden" name="ip" value="{{ ip }}">
+                        <input type="hidden" name="active_ip" value="{{ result.ip }}">
+                        <button type="submit" class="btn-small">&#8635; Refresh</button>
+                    </form>
+                </h2>
 
                 <div class="grid">
                     <div class="card">
@@ -89,7 +152,10 @@
                             <tr><th>Port</th><td>{{ result.location.wired.port or '—' }}</td></tr>
                             <tr><th>VLAN</th><td>{{ result.location.wired.vlan or '—' }}</td></tr>
                             <tr><th>Port status</th><td>{{ result.location.wired.port_status or '—' }} / {{ result.location.wired.port_connected or '—' }}</td></tr>
+                            <tr><th>Switch data appliance <span class="muted">(L2)</span></th><td>{{ result.location.wired.switch_source_appliance or '—' }}</td></tr>
+                            <tr><th>ARP source appliance <span class="muted">(L3)</span></th><td>{{ result.location.wired.arp_source_appliances|join(', ') or '—' }}</td></tr>
                         </table>
+                        <p class="hint">Appliance(s) recorded as the source of the switch/port and ARP data above -- the same field-source attribution shown elsewhere on this page (e.g. the MAC's source), not independently-verified proof of which appliance physically polls the switch itself.</p>
                     </div>
                     {% endif %}
 
@@ -180,8 +246,14 @@
                         </select>
                         <span class="muted" id="tree-window-status-{{ slug }}"></span>
                     </div>
+                    <div class="tree-view-tabs" id="tree-view-tabs-{{ slug }}">
+                        <button type="button" class="tree-view-tab-btn active" data-tree-view="current">Current view</button>
+                        <button type="button" class="tree-view-tab-btn" data-tree-view="graphic">Graphic view</button>
+                    </div>
                     <div id="policy-tree-{{ slug }}" data-ip="{{ result.ip }}" data-initial-ids="{{ result.last_checked.rule_ids|tojson|forceescape }}">
                         Loading tree…
+                    </div>
+                    <div id="policy-tree-graphic-{{ slug }}" class="tree-graphic-container" style="display:none">
                     </div>
                 </div>
 
@@ -202,108 +274,421 @@
                     </div>
                     <p class="hint" id="rawfields-refresh-status-{{ slug }}"></p>
                 </div>
-
-                <div class="card actions">
-                    <h3>Actions</h3>
-                    <h4>Debug</h4>
-                    <form method="post" action="/debugset" class="debug-form" id="debugset-form-{{ slug }}">
-                        <input type="hidden" name="ip" value="{{ result.ip }}">
-                        <input type="hidden" name="time_mode" id="debugset-time-mode-{{ slug }}" value="duration">
-                        <input type="hidden" name="start_epoch" id="debugset-start-epoch-{{ slug }}">
-                        <input type="hidden" name="end_epoch" id="debugset-end-epoch-{{ slug }}">
-
-                        <div class="tree-filter-row">
-                            <label class="tree-filter-toggle">
-                                <input type="radio" name="time_mode_ui_{{ slug }}" id="debugset-mode-duration-{{ slug }}" value="duration" checked>
-                                Duration
-                            </label>
-                            <label class="tree-filter-toggle">
-                                <input type="radio" name="time_mode_ui_{{ slug }}" id="debugset-mode-window-{{ slug }}" value="window">
-                                Start/End time
-                            </label>
-                        </div>
-
-                        <div class="tree-filter-row" id="debugset-duration-row-{{ slug }}">
-                            <label class="tree-filter-toggle">Duration (min), applied to every checked plugin
-                                <input type="number" name="duration_minutes" value="60" min="1" max="1440" step="1" style="width:5em">
-                            </label>
-                        </div>
-
-                        <div class="tree-filter-row" id="debugset-window-row-{{ slug }}" style="display:none;">
-                            <label class="tree-filter-toggle">Start <input type="datetime-local" id="debugset-start-{{ slug }}"></label>
-                            <label class="tree-filter-toggle">End <input type="datetime-local" id="debugset-end-{{ slug }}"></label>
-                        </div>
-
-                        <table class="debug-config-table">
-                            <tr><th></th><th>Plugin</th><th>Appliance</th><th>Level</th></tr>
-                            {% for t in result.debug_targets %}
-                            <tr>
-                                <td><input type="checkbox" name="include_{{ t.plugin }}" value="1" checked></td>
-                                <td><code>{{ t.plugin }}</code></td>
-                                <td><code>{{ t.target }}</code></td>
-                                <td>
-                                    <select name="level_{{ t.plugin }}">
-                                        {% for lvl in range(0, 13) %}
-                                        <option value="{{ lvl }}" {% if lvl == 4 %}selected{% endif %}>{{ lvl }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </table>
-                        <button type="submit" name="mode" value="start">Start debug</button>
-                        <button type="submit" name="mode" value="stop">Stop debug now</button>
-                        <p class="hint">Unchecking a plugin excludes it entirely from either button -- its level/duration are ignored, not just skipped.</p>
-                        <p class="hint">Start/End time covers past and future. Both in the past: builds a historical tech-support bundle instead of live debug (debug can't be backdated). Start now-or-earlier, end in the future: starts immediately, runs until the end time. Start in the future: genuinely scheduled, begins exactly then.</p>
-                    </form>
-                    <form method="post" action="/techsupport" class="inline-form">
-                        <input type="hidden" name="ip" value="{{ result.ip }}">
-                        <button type="submit">Build tech-support bundle</button>
-                    </form>
-                    <p class="hint">Tech-support builds are refused while a debug window is still active on a relevant plugin — stop debug (or wait it out), then build.</p>
-                </div>
             </section>
         {% endfor %}
+
         {% endif %}
 
-        {% if result and action == "debugset" %}
-        <section class="result">
-            <h2>Debug updated — {{ result.ip }}</h2>
-            <div class="card">
-                <table>
-                    <tr><th>Plugin</th><th>Target</th><th>Level</th><th>Duration</th><th>Result</th></tr>
-                    {% for d in result.debug_set %}
-                    <tr><td>{{ d.plugin }}</td><td>{{ d.target }}</td><td>{{ d.level }}</td><td>{{ d.minutes }} min</td><td>{{ "ok" if d.ok else "failed" }} — {{ d.output }}</td></tr>
-                    {% endfor %}
+        </section>
+
+        <section class="page-tab-panel page-tab-panel-hidden" data-page-tab-panel="appliances">
+        {% if active_appliance_runs %}
+        <div class="card">
+            <h3>Run Show Errors in progress <span class="muted">(started by any session, not yet finished)</span></h3>
+            <table>
+                <tr><th>Target</th><th>Duration</th><th>Started</th><th></th></tr>
+                {% for run in active_appliance_runs %}
+                <tr>
+                    <td>{{ run.target }}</td><td>{{ run.duration }}</td><td>{{ run.started_display }}</td>
+                    <td>
+                        <form method="post" action="/appliances/kill" class="inline-form">
+                            <input type="hidden" name="run_id" value="{{ run.id }}">
+                            <button type="submit" class="btn-small btn-secondary">Kill</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+            <p class="hint">Reloading this page won't lose track of these -- see the panel below, which picks them
+                back up automatically. Starting a new run against a target already in this list is refused, not
+                queued or duplicated. "Kill" doesn't reach into a live process (there's no way to from here) -- it
+                just clears a stuck "running" state, e.g. one left behind by a container redeploy mid-job.</p>
+        </div>
+        {% endif %}
+
+        <div class="card actions" id="appliances-panel" data-active-runs="{{ active_appliance_runs|tojson|forceescape }}">
+            <h3>Appliances <span class="muted">(from the EM's own registry, live online status)</span>
+                <form method="post" action="/admin/clear_log/appliance_runs" class="inline-form" style="display:inline"
+                    onsubmit="return confirm('Clear Run Show Errors job history? Currently running jobs are cleared too, not just finished ones.');">
+                    <button type="submit" class="btn-small btn-secondary">Clear job history</button>
+                </form>
+            </h3>
+            <p class="hint" id="appliances-status">Loading appliances…</p>
+            <div class="tree-filter-row" id="appliances-checkbox-row"></div>
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Duration
+                    <input type="number" id="appliances-duration-value" value="30" min="1" max="9999" step="1" style="width:5em">
+                </label>
+                <select id="appliances-duration-unit">
+                    <option value="m" selected>Minutes</option>
+                    <option value="h">Hours</option>
+                </select>
+                <button type="button" id="appliances-run-btn">Run Show Errors</button>
+            </div>
+            <p class="hint">Runs <code>fstool tech-support -t &lt;duration&gt; --review --show-errors</code> on each checked appliance -- a real, unscoped snapshot that takes several minutes per appliance, not a quick check.</p>
+
+            <div id="appliances-tabs-wrap" style="display:none; margin-top:1rem;">
+                <div class="tabs" id="appliances-tabbar">
+                    <button type="button" id="appliances-page-prev" class="tab-page-btn">-</button>
+                    <span id="appliances-tabbar-buttons" class="appliances-tabbar-buttons"></span>
+                    <button type="button" id="appliances-page-next" class="tab-page-btn">+</button>
+                </div>
+                <div id="appliances-tab-panels"></div>
+            </div>
+        </div>
+        </section>
+
+        <section class="page-tab-panel{% if active_page_tab != "techsupport" %} page-tab-panel-hidden{% endif %}" data-page-tab-panel="techsupport">
+        <div style="display:flex; justify-content:flex-end; margin-bottom:0.75rem; gap:1.25rem; align-items:center;">
+            <label class="tree-filter-toggle">Enhance Trace
+                <select id="trace-target-picker">
+                    <option value="">-- pick appliance/EM --</option>
+                </select>
+            </label>
+            <label class="tree-filter-toggle">Company Name
+                <input type="text" id="techsupport-company" value="Yubique" maxlength="60"
+                    pattern="[A-Za-z0-9._-]{1,60}" title="Letters, numbers, '.', '-' and '_' only -- no spaces"
+                    style="width:12em">
+            </label>
+        </div>
+        <div class="card actions" id="techsupport-panel" data-active-runs="{{ active_techsupport_runs|tojson|forceescape }}"
+            data-all-targets="{{ (successful[0].result.all_targets if successful else [])|tojson|forceescape }}"
+            data-databases="{{ (successful[0].result.databases if successful else {})|tojson|forceescape }}">
+            <h3>Appliance Host Tech Support Bundle Generation
+                <form method="post" action="/admin/clear_log/techsupport_runs" class="inline-form" style="display:inline"
+                    onsubmit="return confirm('Clear tech-support build history (Host + EM, currently running included)? This does not touch bundles already saved on the EM.');">
+                    <button type="submit" class="btn-small btn-secondary">Clear job history</button>
+                </form>
+            </h3>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Case reference
+                    <input type="text" id="techsupport-case-ref" placeholder="Case-12345-YourName" style="width:16em">
+                </label>
+            </div>
+            <p class="hint">Suggested format: <code>Case-&lt;ticket#&gt;-&lt;YourName&gt;</code> -- optional. When set, it's
+                added to each bundle's own fstool comment and every bundle built under it is grouped into one directory
+                on the box that built it (fstool's own comment doesn't affect the file's name/path by itself). Letters,
+                numbers, "-" and "_" only.</p>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">
+                    <input type="checkbox" id="techsupport-send">
+                    Send support bundle directly to Forescout
+                </label>
+            </div>
+            <p class="hint">Adds fstool's own <code>--send</code> flag alongside <code>--pack</code> -- the bundle is
+                still built and centralized onto the EM as normal, and also transmitted directly to Forescout
+                support.</p>
+
+            <div class="tree-filter-row" id="techsupport-checkbox-row">
+                {% for entry in successful %}
+                <label class="tree-filter-toggle">
+                    <input type="checkbox" class="techsupport-ip-checkbox" data-target="{{ entry.result.ip }}"
+                        data-debug-targets="{{ entry.result.debug_targets|tojson|forceescape }}"
+                        data-own-appliance="{{ entry.result.own_appliance }}">
+                    {{ entry.result.ip }} <span class="verdict verdict-{{ entry.result.wired_or_wireless }}">{{ entry.result.wired_or_wireless }}</span>
+                </label>
+                {% endfor %}
+            </div>
+
+            <table id="techsupport-plugin-table" style="display:none">
+                <thead><tr><th></th><th>Plugin</th><th>Source appliance</th></tr></thead>
+                <tbody id="techsupport-plugin-tbody"></tbody>
+            </table>
+            <p id="techsupport-plugin-hint" class="hint" style="display:none">Plugins relevant to the checked
+                host(s), one row each -- tick which ones to include in this build. None ticked is fine -- each
+                checked host's own managing appliance always gets a bundle regardless (general category set,
+                plus its hostinfo attached). The source appliance defaults to whatever this app detected live
+                (marked "detected"), but can be changed to any known box -- useful when the detected source is
+                wrong or ambiguous, e.g. a plugin that's genuinely enabled on more than one appliance.</p>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">
+                    <input type="checkbox" id="techsupport-attach-db-toggle">
+                    Attach DBs
+                </label>
+            </div>
+            <div id="techsupport-dbtable-controls" style="display:none">
+                <div class="tree-filter-row">
+                    <label class="tree-filter-toggle">Filter
+                        <input type="text" id="techsupport-dbtable-filter" placeholder="table name…" style="width:16em">
+                    </label>
+                </div>
+                <table id="techsupport-dbtable-table">
+                    <thead><tr><th></th><th>Table</th><th>Size</th><th>Appliance</th></tr></thead>
+                    <tbody id="techsupport-dbtable-tbody"></tbody>
                 </table>
+                <p class="hint">The significant tables <code>fstool db diskspace</code> reports on each checked
+                    host's own managing appliance -- e.g. <code>source_log</code>, <code>hostinfo</code> --
+                    attached via fstool's own <code>--dbtable</code>. Sorted biggest first (by real bytes, not
+                    just the display text). Each table defaults to that managing appliance ("detected"), but
+                    the appliance can be overridden per row the same way plugin targets can be. The table set
+                    is genuinely per-box, so only tables confirmed to exist on that specific box are offered
+                    here.</p>
             </div>
-        </section>
-        {% endif %}
 
-        {% if result and action == "debugscheduled" %}
-        <section class="result">
-            <h2>Debug scheduled — {{ result.ip }}</h2>
-            <div class="card">
-                <p>Starts <strong>{{ result.start_display }}</strong>, ends <strong>{{ result.end_display }}</strong>. See the Scheduled debug card above for a cancel button.</p>
-                <p class="hint">fstool has no native delayed start -- this app's own scheduler will fire the enable command at the start time, then let fstool's own duration handle the end.</p>
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Debug level
+                    <select id="techsupport-level">
+                        {% for lvl in range(13) %}
+                        <option value="{{ lvl }}"{% if lvl == 4 %} selected{% endif %}>{{ lvl }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="tree-filter-toggle">Duration
+                    <input type="number" id="techsupport-duration-value" value="60" min="1" max="9999" step="1" style="width:5em">
+                </label>
+                <select id="techsupport-duration-unit">
+                    <option value="m" selected>Minutes</option>
+                    <option value="h">Hours</option>
+                </select>
             </div>
-        </section>
+            <p class="hint">Enables debug at this level on each relevant plugin for every checked host, waits out the
+                duration, then collects -- guarantees the bundle actually contains fresh debug-level data instead of
+                whatever happened to already be logged. Every relevant plugin that resolves to the same appliance
+                collects in one combined bundle, not one per plugin or per host.</p>
+
+            <button type="button" id="techsupport-build-btn">Review commands…</button>
+            {% if not successful %}
+            <p class="hint">Look up an IP first on the IP Lookup tab to select a host here.</p>
+            {% endif %}
+            <p class="hint">Builds are refused while a debug window is already active on a relevant plugin from
+                elsewhere -- wait for it to finish, then build. Bundles are built and reported, not auto-downloaded --
+                retrieve them from <code>/shared/shared/case/&lt;case reference&gt;/</code> on the EM. Each bundle also
+                gets a "-commands.txt" file written right next to it recording the exact fstool command(s) that
+                produced it -- useful if the collection process itself ever needs debugging.</p>
+
+            <div id="techsupport-jobs"></div>
+        </div>
+
+        <div id="techsupport-preview-modal" class="modal-overlay" style="display:none;">
+            <div class="modal-box">
+                <h3>Review commands</h3>
+                <p class="hint">These are the exact commands that will run if you proceed -- nothing has started yet.</p>
+                <div id="techsupport-preview-body"></div>
+                <div class="modal-actions">
+                    <button type="button" id="techsupport-preview-cancel" class="btn-secondary">Cancel</button>
+                    <button type="button" id="techsupport-preview-proceed" class="btn-gold">Proceed</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card actions" id="techsupport-em-panel" data-active-runs="{{ active_techsupport_runs|tojson|forceescape }}">
+            <h3>EM Tech Support Bundle Generation</h3>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Case reference
+                    <input type="text" id="techsupport-em-case-ref" placeholder="Case-12345-YourName" style="width:16em">
+                </label>
+            </div>
+            <p class="hint">Same as above, applied to this bundle's fstool comment and its directory under
+                <code>/shared/shared/case/</code>.</p>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">
+                    <input type="checkbox" id="techsupport-em-send">
+                    Send support bundle directly to Forescout
+                </label>
+            </div>
+            <p class="hint">Adds fstool's own <code>--send</code> flag alongside <code>--pack</code> -- the bundle is
+                still built and centralized onto the EM as normal, and also transmitted directly to Forescout
+                support.</p>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Duration
+                    <input type="number" id="techsupport-em-duration-value" value="60" min="1" max="9999" step="1" style="width:5em">
+                </label>
+                <select id="techsupport-em-duration-unit">
+                    <option value="m" selected>Minutes</option>
+                    <option value="h">Hours</option>
+                </select>
+            </div>
+            <p class="hint">No host to scope plugins from, so this collects fstool's own default category set
+                directly on the EM -- no debug-enable step.</p>
+
+            <button type="button" id="techsupport-em-build-btn">Review commands…</button>
+            <p class="hint">Bundles are built and reported, not auto-downloaded -- retrieve them from
+                <code>/shared/shared/case/&lt;case reference&gt;/192.168.22.210/</code> on the EM. Each bundle also gets
+                a "-commands.txt" file written right next to it.</p>
+
+            <div id="techsupport-em-jobs"></div>
+        </div>
+
+        {% if error and action == "techsupport" %}
+        <div class="error">{{ error }}</div>
         {% endif %}
 
         {% if result and action == "techsupport" %}
         <section class="result">
+            {% if result.ip %}
             <h2>Tech-support bundle(s) — {{ result.ip }} <span class="verdict verdict-{{ result.wired_or_wireless }}">{{ result.wired_or_wireless }}</span></h2>
+            {% else %}
+            <h2>Tech-support bundle(s) — historical window</h2>
+            {% endif %}
             <div class="card">
                 <table>
-                    <tr><th>Plugin</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th></tr>
+                    <tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th></tr>
                     {% for b in result.bundles %}
-                    <tr><td>{{ b.plugin }}</td><td>{{ b.target }}</td><td>{{ "ok" if b.ok else "failed" }}</td><td>{{ b.path or '—' }}</td><td>{{ b.size or '—' }}</td></tr>
+                    <tr><td>{{ b.plugins|join(', ') }}</td><td>{{ b.hosts|join(', ') or '—' }}</td><td>{{ b.target }}</td><td>{{ "ok" if b.ok else "failed" }}</td>
+                        <td>{% if b.chunks %}Split into {{ b.chunks|length }} parts (over 1.5GB):{% for c in b.chunks %}<div>{{ c }}</div>{% endfor %}{% else %}{{ b.path or '—' }}{% endif %}</td>
+                        <td>{{ b.size or '—' }}</td><td>{{ b.commands_log or '—' }}</td></tr>
                     {% endfor %}
                 </table>
-                <p class="hint">Bundles are built and reported, not auto-downloaded — retrieve manually per the [[Tech-Support Bundle Collection]] runbook.</p>
             </div>
         </section>
         {% endif %}
+
+        {% if case_history %}
+        <div class="card">
+            <h3>Case history <span class="muted">(most recent {{ case_history|length }})</span>
+                <form method="post" action="/admin/clear_log/case_history" class="inline-form" style="display:inline"
+                    onsubmit="return confirm('Clear case history? This does not affect bundles already saved on the EM.');">
+                    <button type="submit" class="btn-small btn-secondary">Clear</button>
+                </form>
+            </h3>
+            <table>
+                <tr><th>When</th><th>Case reference</th><th>Target</th><th>Result</th></tr>
+                {% for h in case_history %}
+                <tr>
+                    <td>{{ h.logged_display }}</td>
+                    <td>{{ h.case_ref or '—' }}</td>
+                    <td>{{ h.key }}</td>
+                    <td>
+                        {% if h.ok %}{{ h.bundles|length }} bundle(s) ok
+                        {% else %}<span class="case-history-error">{{ h.error }}</span>{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+        </section>
+
+        <section class="page-tab-panel page-tab-panel-hidden" data-page-tab-panel="templates">
+        <div class="card">
+            <h3>Templates <span class="muted">(generate a standalone tech-support collection script for a remote EM)</span></h3>
+            <p class="hint">Produces ONE self-contained bash script -- no dependency on this app, its SSH key, or
+                this network once downloaded -- meant to be copied onto a different EM this app has no live
+                connection to, and run there directly (the script itself SSHes from that EM to its own
+                appliances, the same way this app's own EM-side wrapper does). Everything below is entered by
+                hand, since there's no live data to pull from a box this app has never talked to. Review shows
+                the exact script text before anything is finalized; Proceed locks it in; Download saves it.</p>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Company Name
+                    <input type="text" id="tmpl-company" maxlength="60" style="width:14em">
+                </label>
+                <label class="tree-filter-toggle">Case Name
+                    <input type="text" id="tmpl-case" maxlength="60" style="width:14em">
+                </label>
+                <label class="tree-filter-toggle">
+                    <input type="checkbox" id="tmpl-send">
+                    Direct Send to Forescout
+                </label>
+            </div>
+            <p class="hint">Letters, numbers, "-", "_" and "." only -- used in the script's <code>-comment</code>/
+                <code>-company</code> values and in the suggested filename.</p>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">EM IP Address
+                    <input type="text" id="tmpl-em-ip" placeholder="192.168.x.x" style="width:12em">
+                </label>
+            </div>
+
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Appliance List <span class="muted">(one IP per line)</span></label>
+            </div>
+            <textarea id="tmpl-appliances" rows="4" style="width:100%; max-width:28em; font-family:Consolas,Menlo,monospace;"
+                placeholder="192.168.22.212&#10;192.168.22.213"></textarea>
+
+            <h4>Plugins</h4>
+            <p class="hint">Which plugin's data to collect, on which box, at what debug level, for how long.</p>
+            <table id="tmpl-plugin-table">
+                <thead><tr><th>Plugin</th><th>Target</th><th>Level</th><th>Duration</th><th></th></tr></thead>
+                <tbody id="tmpl-plugin-tbody"></tbody>
+            </table>
+            <button type="button" id="tmpl-plugin-add" class="btn-small">+ Add plugin</button>
+
+            <h4>Attach DB tables</h4>
+            <p class="hint">Significant table names (from <code>fstool db diskspace</code>, e.g. <code>source_log</code>,
+                <code>hostinfo</code>) to attach via <code>--dbtable</code>, and which box to pull each from.</p>
+            <table id="tmpl-db-table">
+                <thead><tr><th>Table</th><th>Target</th><th></th></tr></thead>
+                <tbody id="tmpl-db-tbody"></tbody>
+            </table>
+            <button type="button" id="tmpl-db-add" class="btn-small">+ Add table</button>
+
+            <h4>Hosts</h4>
+            <p class="hint">Host IPs to attach <code>fstool hostinfo</code> for, and which appliance (or the EM)
+                each one is managed by.</p>
+            <table id="tmpl-ip-table">
+                <thead><tr><th>Host IP</th><th>Appliance</th><th></th></tr></thead>
+                <tbody id="tmpl-ip-tbody"></tbody>
+            </table>
+            <button type="button" id="tmpl-ip-add" class="btn-small">+ Add host</button>
+
+            <h4>General duration</h4>
+            <p class="hint">Used when no plugins are listed above, so a target with only hostinfo/DB tables (or
+                nothing at all specific to it) still has a snapshot time window -- same idea as the EM panel's
+                own Duration field.</p>
+            <div class="tree-filter-row">
+                <label class="tree-filter-toggle">Duration
+                    <input type="number" id="tmpl-duration-value" value="60" min="1" max="9999" step="1" style="width:5em">
+                </label>
+                <select id="tmpl-duration-unit">
+                    <option value="m" selected>Minutes</option>
+                    <option value="h">Hours</option>
+                </select>
+            </div>
+
+            <div class="tree-filter-row" style="margin-top:1rem;">
+                <button type="button" id="tmpl-review-btn">Review script…</button>
+                <button type="button" id="tmpl-proceed-btn" disabled>Proceed</button>
+                <button type="button" id="tmpl-download-btn" disabled>Download</button>
+                <span class="muted" id="tmpl-status"></span>
+            </div>
+
+            <div id="tmpl-preview-wrap" style="display:none; margin-top:1rem;">
+                <p class="hint">Suggested filename: <code id="tmpl-filename"></code></p>
+                <textarea id="tmpl-preview" readonly rows="26"
+                    style="width:100%; font-family:Consolas,Menlo,monospace; font-size:0.8em;"></textarea>
+            </div>
+        </div>
+        </section>
+
+        <section class="page-tab-panel page-tab-panel-hidden" data-page-tab-panel="help">
+        <div class="card">
+            <h3>About</h3>
+            <table>
+                <tr><th>Version</th><td>{{ app_version }}</td></tr>
+                <tr><th>Deployed</th><td>{{ deployed_at_display }}</td></tr>
+                <tr><th>Original design</th><td>{{ app_author }}</td></tr>
+            </table>
+        </div>
+
+        {% if recent_activity %}
+        <div class="card">
+            <h3>Recent activity <span class="muted">(most recent {{ recent_activity|length }} -- tells a real click apart from a script/test request)</span>
+                <form method="post" action="/admin/clear_log/activity_log" class="inline-form" style="display:inline"
+                    onsubmit="return confirm('Clear the recent activity log?');">
+                    <button type="submit" class="btn-small btn-secondary">Clear</button>
+                </form>
+            </h3>
+            <table>
+                <tr><th>When</th><th>Action</th><th>Source</th><th>Details</th></tr>
+                {% for a in recent_activity %}
+                <tr>
+                    <td>{{ a.logged_display }}</td>
+                    <td>{{ a.action }}</td>
+                    <td>{{ a.remote_addr }} <span class="muted">{{ a.user_agent[:40] }}{{ '…' if a.user_agent|length > 40 else '' }}</span></td>
+                    <td><code>{{ a.details_display }}</code></td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+        </section>
     </main>
 
     {% if results %}
@@ -329,6 +714,8 @@
         (function () {
             const ip = "{{ result.ip }}";
             const container = document.getElementById("policy-tree-{{ slug }}");
+            const graphicContainer = document.getElementById("policy-tree-graphic-{{ slug }}");
+            const viewTabs = document.getElementById("tree-view-tabs-{{ slug }}");
             const filterCheckbox = document.getElementById("tree-filter-{{ slug }}");
             const windowValue = document.getElementById("tree-window-value-{{ slug }}");
             const windowUnit = document.getElementById("tree-window-unit-{{ slug }}");
@@ -421,6 +808,134 @@
                 if (firstMatch) firstMatch.scrollIntoView({ block: "center" });
             }
 
+            // Graphic view -- David's ask, 2026-08-26: a diagram representation of the policy tree, as a
+            // second tab alongside the existing collapsible-list view, sharing the same fetched tree,
+            // matched-window filter, and highlighted-rule state (recomputed together in render() below, not
+            // a separate fetch/highlight pass). A plain custom SVG node-link layout, not an external
+            // charting library -- avoids adding an outbound/CDN dependency for what's really a simple tree
+            // shape, and the default "matched only" filter keeps the typical render small (a handful of
+            // nodes); the unfiltered full NINHS tree (2712 nodes) is large but scrollable, and every node
+            // with children is click-to-collapse so it stays navigable. collapsedIds persists across
+            // re-renders (filter toggle, window change) so expand/collapse state isn't lost by an unrelated
+            // control changing.
+            const svgNS = "http://www.w3.org/2000/svg";
+            const NODE_W = 170, NODE_H = 26, H_GAP = 16, V_GAP = 46;
+            const collapsedIds = new Set();
+
+            function layoutTree(root) {
+                let leafX = 0;
+                function visit(node, depth) {
+                    const hasChildren = (node.children || []).length > 0;
+                    const collapsed = hasChildren && collapsedIds.has(node.id);
+                    const childPositions = collapsed ? [] : (node.children || []).map(c => visit(c, depth + 1));
+                    let x;
+                    if (childPositions.length === 0) {
+                        x = leafX * (NODE_W + H_GAP);
+                        leafX++;
+                    } else {
+                        const xs = childPositions.map(c => c.x);
+                        x = (Math.min(...xs) + Math.max(...xs)) / 2;
+                    }
+                    return { node, x, y: depth * (NODE_H + V_GAP), hasChildren, collapsed, children: childPositions };
+                }
+                return visit(root, 0);
+            }
+
+            function flattenPositioned(pos, out) {
+                out.push(pos);
+                pos.children.forEach(c => flattenPositioned(c, out));
+                return out;
+            }
+
+            function renderGraphic(tree) {
+                graphicContainer.textContent = "";
+                if (!tree) {
+                    graphicContainer.textContent = "No matched, enabled policies found for this host.";
+                    return;
+                }
+                const positioned = layoutTree(tree);
+                const flat = flattenPositioned(positioned, []);
+                const maxX = Math.max(...flat.map(p => p.x)) + NODE_W;
+                const maxY = Math.max(...flat.map(p => p.y)) + NODE_H;
+
+                const highlightSet = new Set(initialIds);
+                const pathSet = new Set();
+                (function markPaths(pos) {
+                    let selfOrDescendantHighlighted = highlightSet.has(pos.node.id);
+                    pos.children.forEach(c => { if (markPaths(c)) selfOrDescendantHighlighted = true; });
+                    if (selfOrDescendantHighlighted && !highlightSet.has(pos.node.id)) pathSet.add(pos.node.id);
+                    return selfOrDescendantHighlighted;
+                })(positioned);
+
+                const svg = document.createElementNS(svgNS, "svg");
+                svg.setAttribute("width", maxX + 20);
+                svg.setAttribute("height", maxY + 20);
+                svg.setAttribute("viewBox", "-10 -10 " + (maxX + 20) + " " + (maxY + 20));
+
+                (function drawEdges(pos) {
+                    pos.children.forEach(c => {
+                        const x1 = pos.x + NODE_W / 2, y1 = pos.y + NODE_H;
+                        const x2 = c.x + NODE_W / 2, y2 = c.y;
+                        const midY = (y1 + y2) / 2;
+                        const path = document.createElementNS(svgNS, "path");
+                        path.setAttribute("class", "tree-graphic-edge");
+                        path.setAttribute("d", `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`);
+                        svg.appendChild(path);
+                        drawEdges(c);
+                    });
+                })(positioned);
+
+                (function drawNode(pos) {
+                    const node = pos.node;
+                    const classes = ["tree-graphic-node", "tree-graphic-" + node.type];
+                    if (node.type === "rule" && !node.enabled) classes.push("tree-graphic-disabled");
+                    if (highlightSet.has(node.id)) classes.push("tree-graphic-highlight");
+                    else if (pathSet.has(node.id)) classes.push("tree-graphic-path");
+                    if (pos.collapsed) classes.push("tree-graphic-collapsed");
+
+                    const g = document.createElementNS(svgNS, "g");
+                    g.setAttribute("class", classes.join(" "));
+                    g.setAttribute("transform", "translate(" + pos.x + "," + pos.y + ")");
+
+                    const rect = document.createElementNS(svgNS, "rect");
+                    rect.setAttribute("width", NODE_W);
+                    rect.setAttribute("height", NODE_H);
+                    rect.setAttribute("rx", 5);
+                    g.appendChild(rect);
+
+                    let label = node.name || "";
+                    if (node.type === "inner_rule" && node.action_enabled) label += " ●";
+                    if (label.length > 26) label = label.slice(0, 25) + "…";
+                    const text = document.createElementNS(svgNS, "text");
+                    text.setAttribute("x", 6);
+                    text.setAttribute("y", NODE_H / 2 + 4);
+                    text.textContent = label;
+                    g.appendChild(text);
+
+                    if (pos.hasChildren) {
+                        const marker = document.createElementNS(svgNS, "text");
+                        marker.setAttribute("x", NODE_W - 16);
+                        marker.setAttribute("y", NODE_H / 2 + 4);
+                        marker.setAttribute("class", "tree-graphic-collapse-marker");
+                        marker.textContent = pos.collapsed ? "[+]" : "[-]";
+                        g.appendChild(marker);
+                        g.addEventListener("click", () => {
+                            if (collapsedIds.has(node.id)) collapsedIds.delete(node.id); else collapsedIds.add(node.id);
+                            renderGraphic(tree);
+                        });
+                    }
+
+                    svg.appendChild(g);
+                    pos.children.forEach(drawNode);
+                })(positioned);
+
+                graphicContainer.appendChild(svg);
+                if (highlightSet.size) {
+                    const first = svg.querySelector(".tree-graphic-highlight");
+                    if (first) first.scrollIntoView({ block: "center", inline: "center" });
+                }
+            }
+
             function render() {
                 if (!fullTree) return;
                 const filtered = filterCheckbox.checked;
@@ -428,11 +943,22 @@
                 container.textContent = "";
                 if (!treeToShow) {
                     container.textContent = "No matched, enabled policies found for this host.";
-                    return;
+                } else {
+                    container.appendChild(buildNode(treeToShow));
+                    applyHighlight(initialIds);
                 }
-                container.appendChild(buildNode(treeToShow));
-                applyHighlight(initialIds);
+                renderGraphic(treeToShow);
             }
+
+            viewTabs.querySelectorAll(".tree-view-tab-btn").forEach(btn => {
+                btn.addEventListener("click", () => {
+                    viewTabs.querySelectorAll(".tree-view-tab-btn").forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                    const showGraphic = btn.dataset.treeView === "graphic";
+                    container.style.display = showGraphic ? "none" : "";
+                    graphicContainer.style.display = showGraphic ? "" : "none";
+                });
+            });
 
             filterCheckbox.addEventListener("change", render);
             windowValue.addEventListener("change", fetchMatchedAndRender);
@@ -581,52 +1107,14 @@
 
             stampLastChecked();
             status.textContent = "auto-updates every 30s";
-            setInterval(fetchAndRender, 30000);
-        })();
-
-        // Debug config: Duration vs Start/End time toggle. Which of three
-        // paths a Start/End submission actually takes (historical bundle /
-        // start-now-run-to-end / genuinely scheduled future start) depends
-        // on "now" at submit time on the server, not duplicated here --
-        // this only toggles the UI and converts the two datetime-local
-        // inputs (no timezone of their own) into epoch seconds using the
-        // browser's own local timezone before the form submits.
-        (function () {
-            const form = document.getElementById("debugset-form-{{ slug }}");
-            const radioDuration = document.getElementById("debugset-mode-duration-{{ slug }}");
-            const radioWindow = document.getElementById("debugset-mode-window-{{ slug }}");
-            const durationRow = document.getElementById("debugset-duration-row-{{ slug }}");
-            const windowRow = document.getElementById("debugset-window-row-{{ slug }}");
-            const startInput = document.getElementById("debugset-start-{{ slug }}");
-            const endInput = document.getElementById("debugset-end-{{ slug }}");
-            const timeModeField = document.getElementById("debugset-time-mode-{{ slug }}");
-            const startEpochField = document.getElementById("debugset-start-epoch-{{ slug }}");
-            const endEpochField = document.getElementById("debugset-end-epoch-{{ slug }}");
-
-            function applyMode() {
-                const isWindow = radioWindow.checked;
-                windowRow.style.display = isWindow ? "flex" : "none";
-                durationRow.style.display = isWindow ? "none" : "flex";
-                timeModeField.value = isWindow ? "window" : "duration";
-            }
-            radioDuration.addEventListener("change", applyMode);
-            radioWindow.addEventListener("change", applyMode);
-            applyMode();
-
-            form.addEventListener("submit", (e) => {
-                // "Stop debug now" is always immediate regardless of
-                // time_mode -- only "Start debug" in window mode needs
-                // start/end populated.
-                const clickedStop = e.submitter && e.submitter.value === "stop";
-                if (clickedStop || !radioWindow.checked) return;
-                if (!startInput.value || !endInput.value) {
-                    e.preventDefault();
-                    window.alert("Set both a start and end time, or switch back to Duration.");
-                    return;
-                }
-                startEpochField.value = Math.floor(new Date(startInput.value).getTime() / 1000);
-                endEpochField.value = Math.floor(new Date(endInput.value).getTime() / 1000);
-            });
+            // Registered under this IP's slug so removing its tab (the "x"
+            // close button) can actually stop this poll, not just hide the
+            // DOM it writes into -- otherwise a removed tab would keep
+            // firing a live query every 30s forever for data David said he
+            // no longer wants.
+            const arpPollInterval = setInterval(fetchAndRender, 30000);
+            window.ipPollIntervals = window.ipPollIntervals || {};
+            (window.ipPollIntervals["{{ slug }}"] = window.ipPollIntervals["{{ slug }}"] || []).push(arpPollInterval);
         })();
 
         // Raw fields browser -- lazy-loaded (a busy host can carry 1000+
@@ -715,7 +1203,9 @@
                         controls.style.display = "flex";
                         render();
                         refreshStatus.textContent = "auto-updates every 30s";
-                        setInterval(pollForUpdate, 30000);
+                        const rawfieldsPollInterval = setInterval(pollForUpdate, 30000);
+                        window.ipPollIntervals = window.ipPollIntervals || {};
+                        (window.ipPollIntervals["{{ slug }}"] = window.ipPollIntervals["{{ slug }}"] || []).push(rawfieldsPollInterval);
                     })
                     .catch(err => { status.textContent = "failed to load: " + err; loadBtn.disabled = false; loadBtn.textContent = "Load raw fields"; });
             });
@@ -741,7 +1231,1347 @@
                 });
             });
         });
+
+        // Per-host "x" -- David's ask: remove just one host's result table
+        // from the current view, not the whole lookup. Client-side only
+        // (there's no session/server-side state behind this page to update
+        // -- reloading would bring the removed host right back), so this
+        // just drops its tab + result section from the DOM and stops the
+        // ARP/raw-fields auto-refresh loops that were running for it (see
+        // window.ipPollIntervals above -- otherwise a removed tab would
+        // keep firing live queries every 30s for data no longer shown).
+        document.querySelectorAll(".tab-close").forEach(closeEl => {
+            closeEl.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const slug = closeEl.dataset.closeTab;
+                const tabBtn = closeEl.closest(".tab-btn");
+                const panel = document.querySelector('.tab-panel[data-tab-panel="' + slug + '"]');
+                const wasActive = tabBtn && tabBtn.classList.contains("active");
+
+                if (window.ipPollIntervals && window.ipPollIntervals[slug]) {
+                    window.ipPollIntervals[slug].forEach(id => clearInterval(id));
+                    delete window.ipPollIntervals[slug];
+                }
+                if (tabBtn) tabBtn.remove();
+                if (panel) panel.remove();
+
+                const remainingTabs = Array.from(document.querySelectorAll(".tab-btn"));
+                const remainingPanels = document.querySelectorAll(".tab-panel");
+                if (wasActive && remainingTabs.length) {
+                    remainingTabs[0].classList.add("active");
+                    remainingPanels.forEach(p => {
+                        p.classList.toggle("tab-panel-hidden", p.dataset.tabPanel !== remainingTabs[0].dataset.tabTarget);
+                    });
+                }
+                // Down to one (or zero) results -- the tab bar itself only
+                // ever rendered for 2+, so collapse it the same way and
+                // make sure whatever's left is actually visible, not still
+                // carrying a stale tab-panel-hidden class from before.
+                if (remainingTabs.length <= 1) {
+                    const tabsBar = document.querySelector(".page-tab-panel[data-page-tab-panel='lookup'] .tabs:not(.page-tabs)");
+                    if (tabsBar) tabsBar.remove();
+                    remainingPanels.forEach(p => p.classList.remove("tab-panel", "tab-panel-hidden"));
+                }
+            });
+        });
     </script>
+
     {% endif %}
+
+    <script>
+        // Appliances panel -- independent of any host lookup above, so
+        // this runs unconditionally rather than inside the results-only
+        // block above. Loads the appliance list once, then on "Run Show Errors"
+        // starts one background job per checked appliance and shows their
+        // progress as sub-tabs (spinner until each individually completes)
+        // nested inside this panel -- not a second top-level tab bar
+        // alongside the host-lookup tabs above. At most 3 sub-tabs are
+        // visible at once; +/- rolls the visible window through the rest
+        // if more than 3 appliances were run.
+        (function () {
+            const panel = document.getElementById("appliances-panel");
+            if (!panel) return;
+
+            const status = document.getElementById("appliances-status");
+            const checkboxRow = document.getElementById("appliances-checkbox-row");
+            const runBtn = document.getElementById("appliances-run-btn");
+            const durationValue = document.getElementById("appliances-duration-value");
+            const durationUnit = document.getElementById("appliances-duration-unit");
+            const tabsWrap = document.getElementById("appliances-tabs-wrap");
+            const tabbarButtons = document.getElementById("appliances-tabbar-buttons");
+            const tabPanels = document.getElementById("appliances-tab-panels");
+            const pagePrev = document.getElementById("appliances-page-prev");
+            const pageNext = document.getElementById("appliances-page-next");
+
+            const PAGE_SIZE = 3;
+            let runs = [];
+            let pageStart = 0;
+
+            function escapeHtml(s) {
+                return (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            fetch("/api/appliances")
+                .then(r => r.json())
+                .then(d => {
+                    if (d.error) { status.textContent = "error: " + d.error; return; }
+                    const appliances = d.appliances || [];
+                    const onlineCount = appliances.filter(a => a.online).length;
+                    status.textContent = onlineCount + " of " + appliances.length + " appliance(s) online";
+                    checkboxRow.innerHTML = appliances.map(a => (
+                        "<label class=\"tree-filter-toggle\">" +
+                        "<input type=\"checkbox\" class=\"appliance-checkbox\" data-target=\"" + escapeHtml(a.address) + "\"" +
+                        (a.online ? " checked" : " disabled") + ">" +
+                        escapeHtml(a.address) + (a.is_em ? " (EM)" : "") + (a.online ? "" : " (offline)") +
+                        "</label>"
+                    )).join("");
+                })
+                .catch(err => { status.textContent = "failed to load: " + err; });
+
+            function renderTabbar() {
+                const visible = runs.slice(pageStart, pageStart + PAGE_SIZE);
+                tabbarButtons.innerHTML = visible.map(r => (
+                    "<button type=\"button\" class=\"tab-btn appliance-tab-btn" + (r.active ? " active" : "") + "\" data-run-id=\"" + r.run_id + "\">" +
+                    escapeHtml(r.target) + "</button>"
+                )).join("");
+                pagePrev.disabled = pageStart === 0;
+                pageNext.disabled = pageStart + PAGE_SIZE >= runs.length;
+
+                tabbarButtons.querySelectorAll(".appliance-tab-btn").forEach(btn => {
+                    btn.addEventListener("click", () => {
+                        runs.forEach(r => { r.active = (r.run_id === btn.dataset.runId); });
+                        applyActiveTab();
+                        renderTabbar();
+                    });
+                });
+            }
+
+            function applyActiveTab() {
+                runs.forEach(r => {
+                    const p = document.getElementById("appliance-panel-" + r.run_id);
+                    if (p) p.classList.toggle("tab-panel-hidden", !r.active);
+                });
+            }
+
+            pagePrev.addEventListener("click", () => { pageStart = Math.max(0, pageStart - 1); renderTabbar(); });
+            pageNext.addEventListener("click", () => { pageStart = Math.min(Math.max(0, runs.length - PAGE_SIZE), pageStart + 1); renderTabbar(); });
+
+            function renderCategories(categories) {
+                if (!categories || !categories.length) {
+                    return "<p class=\"hint\">No error categories reported for this window.</p>";
+                }
+                return categories.map(c => (
+                    "<div class=\"card appliance-error-table\"><h4>" + escapeHtml(c.category) + "</h4>" +
+                    "<div class=\"diag-html\">" + (c.html || "<p class=\"hint\">No detail available.</p>") + "</div></div>"
+                )).join("");
+            }
+
+            // Every diag/*.txt file from the snapshot, rendered from its
+            // own .html sibling (fstool already renders these as real
+            // tables -- see _extract_html_fragment server-side) so each
+            // one -- cpu, queues.bytes, policy_eval_changes, etc -- gets
+            // its own card with its own table(s), not one giant dump.
+            function renderDiagFiles(diagFiles) {
+                if (!diagFiles || !diagFiles.length) return "";
+                return "<h4 class=\"diag-section-heading\">Diagnostics</h4>" + diagFiles.map(f => (
+                    "<div class=\"card appliance-error-table\"><h4>" + escapeHtml(f.filename) + "</h4>" +
+                    "<div class=\"diag-html\">" + (f.html || "<p class=\"hint\">No data.</p>") + "</div></div>"
+                )).join("");
+            }
+
+            function pollRun(run) {
+                fetch("/api/appliance_run/" + run.run_id)
+                    .then(r => r.json())
+                    .then(d => {
+                        const panelEl = document.getElementById("appliance-panel-" + run.run_id);
+                        if (!panelEl) return;
+                        if (d.status === "running") {
+                            setTimeout(() => pollRun(run), 5000);
+                            return;
+                        }
+                        if (d.status === "failed") {
+                            panelEl.innerHTML = "<div class=\"error\">" + escapeHtml(d.error || "failed") + "</div>";
+                            return;
+                        }
+                        const result = d.result || {};
+                        panelEl.innerHTML = (
+                            "<p class=\"hint\">Snapshot: " + escapeHtml(result.snapshot_dir || "—") +
+                            " (deleted after reading -- this panel is a live review, not a retained bundle)</p>" +
+                            renderCategories(result.categories) +
+                            renderDiagFiles(result.diag_files)
+                        );
+                    })
+                    .catch(() => { setTimeout(() => pollRun(run), 5000); });
+            }
+
+            // Adds newRuns (each {target, run_id}) to whatever's already
+            // showing -- appended, never replacing -- so a fresh "Run Show
+            // Errors" click doesn't wipe out jobs resumed from a page
+            // reload (see below), and vice versa. The very first run ever
+            // added becomes the active tab; anything added later doesn't
+            // steal focus from whatever the user's already looking at.
+            function addRunningPanels(newRuns) {
+                if (!newRuns.length) return;
+                const hadNone = runs.length === 0;
+                newRuns.forEach((r, i) => {
+                    const run = { target: r.target, run_id: r.run_id, active: hadNone && i === 0 };
+                    runs.push(run);
+                    tabPanels.insertAdjacentHTML("beforeend",
+                        "<div class=\"appliance-tab-panel" + (run.active ? "" : " tab-panel-hidden") + "\" id=\"appliance-panel-" + run.run_id + "\">" +
+                        "<p class=\"hint\"><span class=\"spinner\"></span>Running fstool tech-support --review --show-errors on " + escapeHtml(run.target) + "…</p>" +
+                        "</div>"
+                    );
+                });
+                tabsWrap.style.display = "block";
+                renderTabbar();
+                newRuns.forEach(pollRun);
+            }
+
+            // Resume-on-load: jobs another click (or another browser tab,
+            // or a previous page view) already started and are still
+            // running are embedded server-side (data-active-runs, read
+            // fresh from disk on every render) -- picked back up here so
+            // a reload never loses track of them, and the "Run Show
+            // Errors" button below can correctly refuse a duplicate start
+            // against a target already in this list.
+            try {
+                const resumed = JSON.parse(panel.dataset.activeRuns || "[]");
+                if (resumed.length) {
+                    addRunningPanels(resumed.map(r => ({ target: r.target, run_id: r.id })));
+                }
+            } catch (e) {}
+
+            runBtn.addEventListener("click", () => {
+                const checked = Array.from(document.querySelectorAll(".appliance-checkbox:checked"));
+                if (!checked.length) { window.alert("Select at least one online appliance."); return; }
+
+                const formData = new URLSearchParams();
+                formData.set("duration_value", durationValue.value);
+                formData.set("duration_unit", durationUnit.value);
+                checked.forEach(cb => formData.set("include_appliance_" + cb.dataset.target, "1"));
+
+                runBtn.disabled = true;
+                runBtn.textContent = "Starting…";
+                fetch("/appliances/run", { method: "POST", body: formData })
+                    .then(r => r.json())
+                    .then(d => {
+                        runBtn.disabled = false;
+                        runBtn.textContent = "Run Show Errors";
+                        if (d.error) { window.alert("Failed to start: " + d.error); return; }
+                        pageStart = 0;
+                        addRunningPanels(d.runs || []);
+                        if (d.skipped && d.skipped.length) {
+                            window.alert("Already running, not started again: " + d.skipped.join(", "));
+                        }
+                    })
+                    .catch(err => {
+                        runBtn.disabled = false;
+                        runBtn.textContent = "Run Show Errors";
+                        window.alert("Failed to start: " + err);
+                    });
+            });
+        })();
+    </script>
+
+    <script>
+        // Both Tech Support Bundle Generation panels (Appliance Host and
+        // EM) share one factory -- each checked host, or the EM, becomes
+        // its own background build job (mirrors the Appliances panel's
+        // job pattern above: start -> spinner -> poll -> result, resumed
+        // on load from data-active-runs so a reload doesn't lose track
+        // of a build already in progress). Build never starts anything
+        // directly -- it first fetches a read-only preview of the exact
+        // commands that would run and shows them in one shared modal;
+        // only clicking Proceed there actually starts the job -- David's
+        // ask, review before going ahead. The two panels are otherwise
+        // fully independent (own case reference, own job list, own
+        // duplicate-run guard) -- deliberately separate now (EM pulled
+        // out of the host panel per David's ask), not just visually
+        // split.
+        (function () {
+            const modal = document.getElementById("techsupport-preview-modal");
+            if (!modal) return;
+
+            const previewBody = document.getElementById("techsupport-preview-body");
+            const previewCancel = document.getElementById("techsupport-preview-cancel");
+            const previewProceed = document.getElementById("techsupport-preview-proceed");
+
+            function escapeHtml(s) {
+                return (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            function phaseLabel(phase) {
+                if (phase === "enabling_debug") return "Enabling debug on relevant plugins…";
+                if (phase === "waiting") return "Debug enabled -- waiting out the duration…";
+                if (phase === "collecting") return "Collecting and centralizing bundle…";
+                return "Working…";
+            }
+
+            function renderBundles(bundles) {
+                if (!bundles || !bundles.length) return "<p class=\"hint\">No bundles reported.</p>";
+                let rows = "<tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th></tr>";
+                bundles.forEach(b => {
+                    const pathCell = (b.chunks && b.chunks.length)
+                        ? "Split into " + b.chunks.length + " parts (over 1.5GB):" +
+                          b.chunks.map(c => "<div>" + escapeHtml(c) + "</div>").join("")
+                        : escapeHtml(b.path || "—");
+                    rows += "<tr><td>" + escapeHtml((b.plugins || []).join(", ")) + "</td><td>" +
+                        escapeHtml((b.hosts || []).join(", ") || "—") + "</td><td>" + escapeHtml(b.target) + "</td><td>" +
+                        (b.ok ? "ok" : "failed") + "</td><td>" + pathCell + "</td>" +
+                        "<td>" + escapeHtml(b.size || "—") + "</td><td>" + escapeHtml(b.commands_log || "—") + "</td></tr>";
+                });
+                return "<table>" + rows + "</table>";
+            }
+
+            // Live commands-log popup -- David's ask, 2026-08-26: "once I
+            // hit the proceed button I need to see what commands are
+            // actually being run... logged to
+            // /tmp/ForeScoutTech-Support.log on the EM and at the same
+            // time to a popup window so I know when it has finished."
+            // Backed by webapp-query.py's techsupportlogtail verb (see
+            // /api/techsupport_log), which tails the same EM-side file
+            // every real command in the tech-support flow already writes
+            // to -- not a separately-maintained display copy. One shared
+            // popup + pending-run-id set across BOTH the host and EM
+            // panels (declared here, at the IIFE's outer scope, so both
+            // createTsPanel instances below close over the same state) --
+            // the underlying log file is one shared file regardless of
+            // which panel's Proceed was clicked, so a single popup
+            // showing everything currently in flight is more useful than
+            // two independent ones. Opened right when Proceed is clicked
+            // (before the /techsupport/proceed request even resolves) so
+            // nothing that runs is missed.
+            let tsLogWindow = null;
+            const tsPendingRunIds = new Set();
+
+            function tsLogWrite(text, finished) {
+                if (!tsLogWindow || tsLogWindow.closed) return;
+                try {
+                    const pre = tsLogWindow.document.getElementById("log");
+                    const banner = tsLogWindow.document.getElementById("banner");
+                    const bannerText = tsLogWindow.document.getElementById("bannerText");
+                    if (pre) {
+                        const nearBottom = tsLogWindow.document.body.scrollHeight - tsLogWindow.scrollY - tsLogWindow.innerHeight < 60;
+                        pre.textContent = text || "(nothing logged yet)";
+                        if (nearBottom) tsLogWindow.scrollTo(0, tsLogWindow.document.body.scrollHeight);
+                    }
+                    if (bannerText) bannerText.textContent = finished ? "All jobs finished." : "Running…";
+                    if (banner) banner.style.background = finished ? "#2e7d32" : "#333";
+                } catch (e) {}
+            }
+
+            function pollTsLog() {
+                if (!tsLogWindow || tsLogWindow.closed) return;
+                fetch("/api/techsupport_log")
+                    .then(r => r.json())
+                    .then(d => tsLogWrite(d.log, tsPendingRunIds.size === 0))
+                    .catch(() => {});
+                setTimeout(pollTsLog, 4000);
+            }
+
+            function openTsLogPopup() {
+                if (tsLogWindow && !tsLogWindow.closed) { tsLogWindow.focus(); return; }
+                tsLogWindow = window.open(
+                    "", "forescout_ts_log", "width=900,height=600,menubar=no,toolbar=no,location=no,status=no"
+                );
+                if (!tsLogWindow) {
+                    window.alert("Popup blocked -- allow popups for this site to see the live commands log.");
+                    return;
+                }
+                tsLogWindow.document.write(
+                    "<!doctype html><html><head><title>ForeScout Tech-Support -- Commands Log</title>" +
+                    "<style>body{font-family:Consolas,Menlo,monospace;background:#111;color:#ddd;margin:0;} " +
+                    "#banner{padding:0.5em 1em;background:#333;color:#fff;font-weight:bold;position:sticky;top:0;" +
+                    "display:flex;justify-content:space-between;align-items:center;} " +
+                    "#tsLogClearBtn{font:inherit;font-size:0.8em;background:#222;color:#ddd;border:1px solid #555;" +
+                    "border-radius:4px;padding:0.2em 0.6em;cursor:pointer;} " +
+                    "pre{white-space:pre-wrap;word-break:break-all;padding:1em;margin:0;font-size:0.85em;}</style>" +
+                    "</head><body><div id=\"banner\"><span id=\"bannerText\">Running…</span>" +
+                    "<button type=\"button\" id=\"tsLogClearBtn\">Clear</button></div>" +
+                    "<pre id=\"log\">Loading…</pre></body></html>"
+                );
+                tsLogWindow.document.close();
+                // Clearing lives on the EM (TS_LOG_PATH), not in this app's own /data -- same
+                // /admin/clear_log/<section> route the server-rendered Clear buttons use, just fetched
+                // from the popup's own JS since this window has no server-rendered form of its own.
+                const clearBtn = tsLogWindow.document.getElementById("tsLogClearBtn");
+                if (clearBtn) {
+                    clearBtn.addEventListener("click", () => {
+                        if (!tsLogWindow.confirm("Clear the tech-support commands log on the EM?")) return;
+                        fetch("/admin/clear_log/ts_command_log", { method: "POST" })
+                            .then(() => pollTsLog())
+                            .catch(() => {});
+                    });
+                }
+                pollTsLog();
+            }
+
+            function tsLogTrackJob(runId) { tsPendingRunIds.add(runId); }
+            function tsLogJobDone(runId) { tsPendingRunIds.delete(runId); }
+
+            function renderPreview(data) {
+                let html = "";
+                (data.targets || []).forEach(t => {
+                    html += "<div class=\"card\"><h4>" + escapeHtml(t.target) + " — " +
+                        escapeHtml((t.plugins || []).join(", ")) + "</h4>";
+                    if (t.hosts && t.hosts.length) {
+                        html += "<p class=\"hint\">Hosts: " + escapeHtml(t.hosts.join(", ")) + "</p>";
+                    }
+                    if (t.already_debug_active && t.already_debug_active.length) {
+                        html += "<p class=\"preview-warning\">Already has debug active: " +
+                            escapeHtml(t.already_debug_active.join(", ")) +
+                            " -- proceeding will re-enable/extend it.</p>";
+                    }
+                    html += "<pre class=\"command-preview\">" + escapeHtml((t.commands || []).join("\n")) + "</pre></div>";
+                });
+                return html || "<p class=\"hint\">Nothing to build.</p>";
+            }
+
+            // Only one flow can have the shared modal open at a time, so
+            // Proceed's handler is simply replaced on each open rather
+            // than needing per-panel modal instances.
+            let closeModal = null;
+            function openPreviewModal(previewData, onProceed) {
+                previewBody.innerHTML = renderPreview(previewData);
+                modal.style.display = "flex";
+                closeModal = () => { modal.style.display = "none"; previewProceed.onclick = null; };
+                previewProceed.onclick = () => { closeModal(); onProceed(); };
+            }
+            previewCancel.addEventListener("click", () => { if (closeModal) closeModal(); });
+            modal.addEventListener("click", (e) => { if (e.target === modal && closeModal) closeModal(); });
+
+            function createTsPanel(opts) {
+                const panel = document.getElementById(opts.panelId);
+                const buildBtn = document.getElementById(opts.buildBtnId);
+                if (!panel || !buildBtn) return;
+                const jobsEl = document.getElementById(opts.jobsId);
+
+                // Kill button, shown only while a job is "running" -- David's ask, 2026-08-26: "I also need a
+                // 'Kill' button to kill off any session that hangs when I hit 'Proceed'." Posts to the
+                // existing /api/techsupport_run/<id>/kill route (already backing the standalone kill logic
+                // for orphaned appliance-review jobs; never had a tech-support-panel button wired to it until
+                // now). Same honest limitation as that route's own docstring: this clears the tracked
+                // "running" state to "failed" so the UI unsticks and a fresh Proceed can be started -- it
+                // does NOT reach into the background thread or abort whatever SSH call is still in flight on
+                // the EM, since there's no way to from here. Good enough for what David actually needs (get
+                // unstuck, try again), not a claim that the remote command itself was cancelled.
+                function pollJob(run) {
+                    fetch("/api/techsupport_run/" + run.run_id)
+                        .then(r => r.json())
+                        .then(d => {
+                            const el = document.getElementById(opts.jobsId + "-" + run.run_id);
+                            if (!el) return;
+                            if (d.status === "running") {
+                                el.innerHTML = "<p class=\"hint\"><span class=\"spinner\"></span>" +
+                                    escapeHtml(run.key) + " -- " + phaseLabel(d.phase) + " " +
+                                    "<button type=\"button\" class=\"btn-small btn-secondary techsupport-kill-btn\">Kill</button></p>";
+                                const killBtn = el.querySelector(".techsupport-kill-btn");
+                                if (killBtn) {
+                                    killBtn.addEventListener("click", () => {
+                                        killBtn.disabled = true;
+                                        killBtn.textContent = "Killing…";
+                                        fetch("/api/techsupport_run/" + run.run_id + "/kill", { method: "POST" })
+                                            .then(r => r.json())
+                                            .then(d3 => {
+                                                if (d3.error) { window.alert("Failed to kill: " + d3.error); killBtn.disabled = false; killBtn.textContent = "Kill"; return; }
+                                                pollJob(run);
+                                            })
+                                            .catch(err => { window.alert("Failed to kill: " + err); killBtn.disabled = false; killBtn.textContent = "Kill"; });
+                                    });
+                                }
+                                setTimeout(() => pollJob(run), 5000);
+                                return;
+                            }
+                            if (d.status === "failed") {
+                                el.innerHTML = "<h4>" + escapeHtml(run.key) + "</h4><div class=\"error\">" +
+                                    escapeHtml(d.error || "failed") + "</div>";
+                                tsLogJobDone(run.run_id);
+                                return;
+                            }
+                            const result = d.result || {};
+                            el.innerHTML = "<h4>" + escapeHtml(run.key) +
+                                (d.case_ref ? " — " + escapeHtml(d.case_ref) : "") + "</h4>" +
+                                renderBundles(result.bundles);
+                            tsLogJobDone(run.run_id);
+                        })
+                        .catch(() => setTimeout(() => pollJob(run), 5000));
+                }
+
+                function addJobs(newRuns) {
+                    newRuns.forEach(r => {
+                        jobsEl.insertAdjacentHTML("beforeend",
+                            "<div class=\"card\" id=\"" + opts.jobsId + "-" + r.run_id + "\">" +
+                            "<p class=\"hint\"><span class=\"spinner\"></span>" + escapeHtml(r.key) + "…</p></div>"
+                        );
+                        pollJob(r);
+                    });
+                }
+
+                try {
+                    const resumed = JSON.parse(panel.dataset.activeRuns || "[]").filter(r => r.kind === opts.kind);
+                    if (resumed.length) addJobs(resumed.map(r => ({ key: r.key, run_id: r.id })));
+                } catch (e) {}
+
+                buildBtn.addEventListener("click", () => {
+                    const formData = opts.buildFormData();
+                    if (formData === null) return;
+
+                    buildBtn.disabled = true;
+                    buildBtn.textContent = "Loading preview…";
+                    fetch("/techsupport/preview", { method: "POST", body: formData })
+                        .then(r => r.json())
+                        .then(d => {
+                            buildBtn.disabled = false;
+                            buildBtn.textContent = "Review commands…";
+                            if (d.error) { window.alert("Failed to preview: " + d.error); return; }
+                            openPreviewModal(d, () => {
+                                openTsLogPopup();
+                                fetch("/techsupport/proceed", { method: "POST", body: formData })
+                                    .then(r => r.json())
+                                    .then(d2 => {
+                                        if (d2.error) { window.alert("Failed to start: " + d2.error); return; }
+                                        (d2.runs || []).forEach(r => tsLogTrackJob(r.run_id));
+                                        addJobs(d2.runs || []);
+                                        if (d2.skipped && d2.skipped.length) {
+                                            window.alert("Already building, not started again: " + d2.skipped.join(", "));
+                                        }
+                                    })
+                                    .catch(err => window.alert("Failed to start: " + err));
+                            });
+                        })
+                        .catch(err => {
+                            buildBtn.disabled = false;
+                            buildBtn.textContent = "Review commands…";
+                            window.alert("Failed to preview: " + err);
+                        });
+                });
+            }
+
+            // Plugin-selection table for the Appliance Host panel -- one row PER PLUGIN (not per
+            // plugin/target pair, and not a wrapping row of chips -- David's ask: "listed by row, not by
+            // column"), recomputed from the union of checked hosts' data-debug-targets. Each row pairs a
+            // checkbox with a source-appliance <select> covering every known box (data-all-targets, from
+            // the panel's own data attribute -- host-independent, same list regardless of which host was
+            // looked up), defaulting to whichever appliance this app auto-detected (marked "detected" in
+            // the option label; when more than one was detected -- a plugin genuinely enabled on multiple
+            // boxes with no other signal to disambiguate -- the first one, sorted, is only a starting
+            // point). David's ask: a real manual override, not just "pick among whichever rows auto-
+            // detection happened to produce". New rows default unchecked (David's ask: not every case
+            // needs every plugin's debug data included); a row's checked state AND its chosen target both
+            // survive a recompute so toggling one host doesn't silently discard a selection made for
+            // another.
+            const tsPanelEl = document.getElementById("techsupport-panel");
+            const tsPluginTable = document.getElementById("techsupport-plugin-table");
+            const tsPluginTbody = document.getElementById("techsupport-plugin-tbody");
+            const tsPluginHint = document.getElementById("techsupport-plugin-hint");
+            let tsAllTargets = [];
+            try { tsAllTargets = JSON.parse(tsPanelEl.dataset.allTargets || "[]"); } catch (e) {}
+            const tsPluginState = new Map(); // plugin -> {checked, target}
+
+            // Advanced Trace -- David's ask, 2026-08-26: an "Enhance Trace" picker (reusing tsAllTargets,
+            // the same EM+appliance list the plugin override select above already uses) that opens a
+            // popup listing every trace category on the chosen box (fstrace.properties, ~250 categories),
+            // each independently tickable with a level, its captured-once default shown alongside, a
+            // "Revert all to default" button, and a minutes/hours auto-revert duration. Same
+            // window.open+document.write popup pattern as the commands-log popup above. Only the
+            // categories the user actually touches this session are ever sent to /set (traceDirty), not a
+            // full resubmit of all ~250 rows every time.
+            const traceTargetPicker = document.getElementById("trace-target-picker");
+            if (traceTargetPicker) {
+                traceTargetPicker.innerHTML = "<option value=\"\">-- pick appliance/EM --</option>" +
+                    tsAllTargets.map(t => "<option value=\"" + escapeHtml(t) + "\">" + escapeHtml(t) + "</option>").join("");
+                traceTargetPicker.addEventListener("change", () => {
+                    const target = traceTargetPicker.value;
+                    traceTargetPicker.value = "";
+                    if (target) openTracePopup(target);
+                });
+            }
+
+            let traceWindow = null;
+            const traceDirty = new Map(); // category -> {enabled, level}
+            const TRACE_LEVELS = ["error", "warning", "normal", "detailed"];
+
+            function traceRenderRows(win, categories, filterText) {
+                const tbody = win.document.getElementById("traceTbody");
+                if (!tbody) return;
+                const ft = (filterText || "").toLowerCase();
+                const rows = categories.filter(c => !ft || c.name.toLowerCase().includes(ft));
+                tbody.innerHTML = rows.map(c => {
+                    const dirty = traceDirty.get(c.name);
+                    const enabled = dirty ? dirty.enabled : c.enabled;
+                    const level = dirty ? dirty.level : c.level;
+                    const checked = enabled ? " checked" : "";
+                    const options = TRACE_LEVELS.map(l =>
+                        "<option value=\"" + l + "\"" + (l === level ? " selected" : "") + ">" + l + "</option>"
+                    ).join("");
+                    const defaultText = (c.default_enabled ? "on" : "off") + " / " + c.default_level;
+                    return "<tr" + (dirty ? " class=\"trace-dirty\"" : "") + ">" +
+                        "<td><input type=\"checkbox\" class=\"trace-enable-cb\" data-name=\"" + escapeHtml(c.name) + "\"" + checked + "></td>" +
+                        "<td>" + escapeHtml(c.name) + "</td>" +
+                        "<td><select class=\"trace-level-select\" data-name=\"" + escapeHtml(c.name) + "\">" + options + "</select></td>" +
+                        "<td class=\"muted\">" + escapeHtml(defaultText) + "</td></tr>";
+                }).join("") || "<tr><td colspan=\"4\">No categories match the filter.</td></tr>";
+
+                tbody.querySelectorAll(".trace-enable-cb, .trace-level-select").forEach(el => {
+                    el.addEventListener("change", () => {
+                        const row = el.closest("tr");
+                        const name = row.querySelector(".trace-enable-cb").dataset.name;
+                        const cb = row.querySelector(".trace-enable-cb");
+                        const sel = row.querySelector(".trace-level-select");
+                        traceDirty.set(name, { enabled: cb.checked, level: sel.value });
+                        row.classList.add("trace-dirty");
+                    });
+                });
+            }
+
+            function openTracePopup(target) {
+                if (traceWindow && !traceWindow.closed) traceWindow.close();
+                traceDirty.clear();
+                traceWindow = window.open(
+                    "", "forescout_trace_" + target.replace(/\./g, "-"),
+                    "width=760,height=700,menubar=no,toolbar=no,location=no,status=no"
+                );
+                if (!traceWindow) {
+                    window.alert("Popup blocked -- allow popups for this site to use Advanced Trace.");
+                    return;
+                }
+                traceWindow.document.write(
+                    "<!doctype html><html><head><title>Advanced Trace -- " + target + "</title>" +
+                    "<style>body{font-family:Consolas,Menlo,monospace;background:#111;color:#ddd;margin:0;font-size:0.85em;} " +
+                    "#banner{padding:0.5em 1em;background:#333;color:#fff;font-weight:bold;position:sticky;top:0;} " +
+                    "#controls{padding:0.6em 1em;background:#1a1a1a;display:flex;gap:0.8em;align-items:center;" +
+                    "flex-wrap:wrap;position:sticky;top:32px;border-bottom:1px solid #333;z-index:1;} " +
+                    "#controls input,#controls select,#controls button{font:inherit;background:#222;color:#ddd;" +
+                    "border:1px solid #555;border-radius:4px;padding:0.25em 0.5em;} " +
+                    "#controls button{cursor:pointer;} table{border-collapse:collapse;width:100%;} " +
+                    "th,td{padding:0.3em 0.6em;text-align:left;border-bottom:1px solid #222;} " +
+                    "th{position:sticky;top:74px;background:#111;} " +
+                    "tr.trace-dirty{background:rgba(224,168,80,0.12);} .muted{color:#8b95ab;}</style></head><body>" +
+                    "<div id=\"banner\">Advanced Trace -- " + escapeHtml(target) + "</div>" +
+                    "<div id=\"controls\">" +
+                    "<input type=\"text\" id=\"traceFilter\" placeholder=\"filter categories…\">" +
+                    "<button type=\"button\" id=\"traceRevertBtn\">Revert all to default</button>" +
+                    "<label>Auto-revert after <input type=\"number\" id=\"traceDurationValue\" min=\"1\" max=\"9999\" style=\"width:5em\"></label>" +
+                    "<select id=\"traceDurationUnit\"><option value=\"m\" selected>Minutes</option><option value=\"h\">Hours</option></select>" +
+                    "<button type=\"button\" id=\"traceApplyBtn\">Apply changes</button>" +
+                    "<span class=\"muted\" id=\"traceStatus\"></span>" +
+                    "</div>" +
+                    "<table><thead><tr><th>On</th><th>Category</th><th>Level</th><th>Default</th></tr></thead>" +
+                    "<tbody id=\"traceTbody\"><tr><td colspan=\"4\">Loading…</td></tr></tbody></table>" +
+                    "</body></html>"
+                );
+                traceWindow.document.close();
+
+                let categories = [];
+                function reload() {
+                    fetch("/api/trace/" + target)
+                        .then(r => r.json())
+                        .then(d => {
+                            if (!traceWindow || traceWindow.closed) return;
+                            const status = traceWindow.document.getElementById("traceStatus");
+                            if (d.error) { if (status) status.textContent = "error: " + d.error; return; }
+                            categories = d.categories || [];
+                            traceRenderRows(traceWindow, categories, traceWindow.document.getElementById("traceFilter").value);
+                        })
+                        .catch(() => {});
+                }
+
+                traceWindow.document.getElementById("traceFilter").addEventListener("input", () => {
+                    traceRenderRows(traceWindow, categories, traceWindow.document.getElementById("traceFilter").value);
+                });
+
+                traceWindow.document.getElementById("traceRevertBtn").addEventListener("click", () => {
+                    if (!traceWindow.confirm("Revert every trace category on " + target + " back to its captured default?")) return;
+                    const status = traceWindow.document.getElementById("traceStatus");
+                    status.textContent = "reverting…";
+                    fetch("/api/trace/" + target + "/revert", { method: "POST" })
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.error) { status.textContent = "error: " + d.error; return; }
+                            traceDirty.clear();
+                            status.textContent = "reverted.";
+                            reload();
+                        })
+                        .catch(err => { status.textContent = "failed: " + err; });
+                });
+
+                traceWindow.document.getElementById("traceApplyBtn").addEventListener("click", () => {
+                    if (traceDirty.size === 0) { traceWindow.alert("No changes to apply."); return; }
+                    const status = traceWindow.document.getElementById("traceStatus");
+                    const durationValue = traceWindow.document.getElementById("traceDurationValue").value.trim();
+                    const durationUnit = traceWindow.document.getElementById("traceDurationUnit").value;
+                    const body = new URLSearchParams();
+                    traceDirty.forEach((v, name) => body.set("change_" + name, (v.enabled ? "on" : "off") + ":" + v.level));
+                    if (durationValue) { body.set("duration_value", durationValue); body.set("duration_unit", durationUnit); }
+                    status.textContent = "applying…";
+                    fetch("/api/trace/" + target + "/set", { method: "POST", body })
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.error) { status.textContent = "error: " + d.error; return; }
+                            traceDirty.clear();
+                            status.textContent = "applied." + (d.revert_job_id ? " Auto-revert scheduled." : "");
+                            reload();
+                        })
+                        .catch(err => { status.textContent = "failed: " + err; });
+                });
+
+                reload();
+            }
+
+            function recomputeTsPluginTable() {
+                const candidatesByPlugin = new Map(); // plugin -> Set(target)
+                document.querySelectorAll(".techsupport-ip-checkbox:checked").forEach(cb => {
+                    let targets = [];
+                    try { targets = JSON.parse(cb.dataset.debugTargets || "[]"); } catch (e) {}
+                    targets.forEach(t => {
+                        if (!candidatesByPlugin.has(t.plugin)) candidatesByPlugin.set(t.plugin, new Set());
+                        candidatesByPlugin.get(t.plugin).add(t.target);
+                    });
+                });
+
+                if (!candidatesByPlugin.size) {
+                    tsPluginTable.style.display = "none";
+                    tsPluginHint.style.display = "none";
+                    tsPluginTbody.innerHTML = "";
+                    return;
+                }
+
+                tsPluginTable.style.display = "";
+                tsPluginHint.style.display = "";
+                const plugins = Array.from(candidatesByPlugin.keys()).sort();
+                tsPluginTbody.innerHTML = plugins.map(plugin => {
+                    const candidates = candidatesByPlugin.get(plugin);
+                    const state = tsPluginState.get(plugin);
+                    const checked = state && state.checked ? " checked" : "";
+                    const targetPool = tsAllTargets.length ? tsAllTargets : Array.from(candidates).sort();
+                    const defaultTarget = (state && state.target) || Array.from(candidates).sort()[0];
+                    const options = targetPool.map(t => {
+                        const label = t + (candidates.has(t) ? " (detected)" : "");
+                        const sel = t === defaultTarget ? " selected" : "";
+                        return "<option value=\"" + escapeHtml(t) + "\"" + sel + ">" + escapeHtml(label) + "</option>";
+                    }).join("");
+                    return "<tr><td><input type=\"checkbox\" class=\"techsupport-plugin-checkbox\" data-plugin=\"" +
+                        escapeHtml(plugin) + "\"" + checked + "></td><td>" + escapeHtml(plugin) + "</td><td>" +
+                        "<select class=\"techsupport-plugin-target-select\" data-plugin=\"" + escapeHtml(plugin) + "\">" +
+                        options + "</select></td></tr>";
+                }).join("");
+
+                tsPluginTbody.querySelectorAll(".techsupport-plugin-checkbox").forEach(cb => {
+                    cb.addEventListener("change", () => {
+                        const plugin = cb.dataset.plugin;
+                        const select = tsPluginTbody.querySelector(
+                            ".techsupport-plugin-target-select[data-plugin=\"" + CSS.escape(plugin) + "\"]"
+                        );
+                        tsPluginState.set(plugin, { checked: cb.checked, target: select ? select.value : null });
+                    });
+                });
+                tsPluginTbody.querySelectorAll(".techsupport-plugin-target-select").forEach(select => {
+                    select.addEventListener("change", () => {
+                        const plugin = select.dataset.plugin;
+                        const checkbox = tsPluginTbody.querySelector(
+                            ".techsupport-plugin-checkbox[data-plugin=\"" + CSS.escape(plugin) + "\"]"
+                        );
+                        tsPluginState.set(plugin, { checked: checkbox ? checkbox.checked : false, target: select.value });
+                    });
+                });
+            }
+
+            // Attach DBs -- David's ask, 2026-08-26 (after a same-day detour assuming whole separate
+            // databases, corrected to: "the only ones I need are listed by running the fstool db diskspace"),
+            // then a same-day follow-up: the list was defaulting to every relevant target a checked host's
+            // plugins fanned out to, when it should default to only the appliance actually managing that
+            // host ("it should only be attaching the DB to the tech-support managing that host") -- with a
+            // manual override mirroring the plugin table's, same reasoning: auto-detection is a starting
+            // point, not a restriction. One row per TABLE NAME (not per target/table pair), defaulting to
+            // whichever checked host's own managing appliance(s) actually have that table (marked
+            // "(detected)"), overridable via <select> to any known box exactly like
+            // techsupport-plugin-target-select. tsDbTables (from data-databases) is
+            // {target: [{name, size}, ...]} in fstool's own size-ranked order; size shown is from whichever
+            // detected target was encountered first, purely informational. A plain substring filter keeps
+            // the list usable without a second round-trip.
+            const tsDbToggle = document.getElementById("techsupport-attach-db-toggle");
+            const tsDbControls = document.getElementById("techsupport-dbtable-controls");
+            const tsDbFilter = document.getElementById("techsupport-dbtable-filter");
+            const tsDbTbody = document.getElementById("techsupport-dbtable-tbody");
+            let tsDbTables = {};
+            try { tsDbTables = JSON.parse(tsPanelEl.dataset.databases || "{}"); } catch (e) {}
+            const tsDbState = new Map(); // table -> {checked, target}
+
+            // David's ask, 2026-08-26: sort by size, biggest first -- the
+            // per-target rewrite above (one row per table NAME) lost
+            // fstool's own size-ranked order once table sizes from
+            // different targets got merged into a single alphabetical
+            // list; this restores it at the merged-row level instead.
+            // sizeStr is fstool's own pg_size_pretty-style text ("1732
+            // MB", "9968 kB", "64 bytes") -- parsed to real bytes so
+            // "9968 kB" correctly sorts below "64 MB" (a plain string
+            // compare would get that backwards).
+            function parseSizeBytes(sizeStr) {
+                const m = /^([\d.]+)\s*(bytes?|kB|MB|GB|TB)$/i.exec((sizeStr || "").trim());
+                if (!m) return 0;
+                const mult = { byte: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 };
+                return parseFloat(m[1]) * (mult[m[2].toLowerCase()] || 1);
+            }
+
+            function recomputeTsDbTable() {
+                const candidatesByTable = new Map(); // table -> {targets: Set(target), size}
+                document.querySelectorAll(".techsupport-ip-checkbox:checked").forEach(cb => {
+                    const ownAppliance = cb.dataset.ownAppliance;
+                    if (!ownAppliance) return;
+                    (tsDbTables[ownAppliance] || []).forEach(entry => {
+                        if (!candidatesByTable.has(entry.name)) {
+                            candidatesByTable.set(entry.name, { targets: new Set(), size: entry.size });
+                        }
+                        candidatesByTable.get(entry.name).targets.add(ownAppliance);
+                    });
+                });
+
+                const filterText = tsDbFilter.value.trim().toLowerCase();
+                const tableNames = Array.from(candidatesByTable.keys())
+                    .filter(name => !filterText || name.toLowerCase().includes(filterText))
+                    .sort((a, b) => {
+                        const bySize = parseSizeBytes(candidatesByTable.get(b).size) - parseSizeBytes(candidatesByTable.get(a).size);
+                        return bySize !== 0 ? bySize : a.localeCompare(b);
+                    });
+
+                tsDbTbody.innerHTML = tableNames.map(name => {
+                    const info = candidatesByTable.get(name);
+                    const state = tsDbState.get(name);
+                    const checked = state && state.checked ? " checked" : "";
+                    const targetPool = tsAllTargets.length ? tsAllTargets : Array.from(info.targets).sort();
+                    const defaultTarget = (state && state.target) || Array.from(info.targets).sort()[0];
+                    const options = targetPool.map(t => {
+                        const label = t + (info.targets.has(t) ? " (detected)" : "");
+                        const sel = t === defaultTarget ? " selected" : "";
+                        return "<option value=\"" + escapeHtml(t) + "\"" + sel + ">" + escapeHtml(label) + "</option>";
+                    }).join("");
+                    return "<tr><td><input type=\"checkbox\" class=\"techsupport-dbtable-checkbox\" data-table=\"" +
+                        escapeHtml(name) + "\"" + checked + "></td><td>" + escapeHtml(name) + "</td><td>" +
+                        escapeHtml(info.size || "—") + "</td><td>" +
+                        "<select class=\"techsupport-dbtable-target-select\" data-table=\"" + escapeHtml(name) + "\">" +
+                        options + "</select></td></tr>";
+                }).join("") || "<tr><td colspan=\"4\" class=\"hint\">No hosts checked yet, or no tables match the filter.</td></tr>";
+
+                tsDbTbody.querySelectorAll(".techsupport-dbtable-checkbox").forEach(cb => {
+                    cb.addEventListener("change", () => {
+                        const table = cb.dataset.table;
+                        const select = tsDbTbody.querySelector(
+                            ".techsupport-dbtable-target-select[data-table=\"" + CSS.escape(table) + "\"]"
+                        );
+                        tsDbState.set(table, { checked: cb.checked, target: select ? select.value : null });
+                    });
+                });
+                tsDbTbody.querySelectorAll(".techsupport-dbtable-target-select").forEach(select => {
+                    select.addEventListener("change", () => {
+                        const table = select.dataset.table;
+                        const checkbox = tsDbTbody.querySelector(
+                            ".techsupport-dbtable-checkbox[data-table=\"" + CSS.escape(table) + "\"]"
+                        );
+                        tsDbState.set(table, { checked: checkbox ? checkbox.checked : false, target: select.value });
+                    });
+                });
+            }
+
+            tsDbToggle.addEventListener("change", () => {
+                tsDbControls.style.display = tsDbToggle.checked ? "" : "none";
+                if (tsDbToggle.checked) recomputeTsDbTable();
+            });
+            tsDbFilter.addEventListener("input", recomputeTsDbTable);
+
+            document.querySelectorAll(".techsupport-ip-checkbox").forEach(cb => {
+                cb.addEventListener("change", () => {
+                    recomputeTsPluginTable();
+                    if (tsDbToggle.checked) recomputeTsDbTable();
+                });
+            });
+            recomputeTsPluginTable();
+
+            createTsPanel({
+                panelId: "techsupport-panel", jobsId: "techsupport-jobs", buildBtnId: "techsupport-build-btn",
+                kind: "host",
+                buildFormData: () => {
+                    const checkedHosts = Array.from(document.querySelectorAll(".techsupport-ip-checkbox:checked"));
+                    if (!checkedHosts.length) { window.alert("Select at least one host."); return null; }
+                    const checkedPlugins = Array.from(document.querySelectorAll(".techsupport-plugin-checkbox:checked"));
+                    const formData = new URLSearchParams();
+                    formData.set("case_ref", document.getElementById("techsupport-case-ref").value.trim());
+                    formData.set("ts_company", document.getElementById("techsupport-company").value.trim());
+                    checkedHosts.forEach(cb => formData.set("include_ts_ip_" + cb.dataset.target, "1"));
+                    checkedPlugins.forEach(cb => {
+                        const select = tsPluginTbody.querySelector(
+                            ".techsupport-plugin-target-select[data-plugin=\"" + CSS.escape(cb.dataset.plugin) + "\"]"
+                        );
+                        const target = select ? select.value : null;
+                        if (target) formData.set("include_plugin_" + target + ":" + cb.dataset.plugin, "1");
+                    });
+                    if (tsDbToggle.checked) {
+                        tsDbTbody.querySelectorAll(".techsupport-dbtable-checkbox:checked").forEach(cb => {
+                            const select = tsDbTbody.querySelector(
+                                ".techsupport-dbtable-target-select[data-table=\"" + CSS.escape(cb.dataset.table) + "\"]"
+                            );
+                            const target = select ? select.value : null;
+                            if (target) formData.set("include_dbtable_" + target + ":" + cb.dataset.table, "1");
+                        });
+                    }
+                    formData.set("ts_level", document.getElementById("techsupport-level").value);
+                    formData.set("ts_duration_value", document.getElementById("techsupport-duration-value").value);
+                    formData.set("ts_duration_unit", document.getElementById("techsupport-duration-unit").value);
+                    formData.set("ts_send", document.getElementById("techsupport-send").checked ? "1" : "0");
+                    return formData;
+                },
+            });
+
+            createTsPanel({
+                panelId: "techsupport-em-panel", jobsId: "techsupport-em-jobs", buildBtnId: "techsupport-em-build-btn",
+                kind: "em",
+                buildFormData: () => {
+                    const formData = new URLSearchParams();
+                    formData.set("case_ref", document.getElementById("techsupport-em-case-ref").value.trim());
+                    formData.set("ts_company", document.getElementById("techsupport-company").value.trim());
+                    formData.set("include_ts_em", "1");
+                    formData.set("em_duration_value", document.getElementById("techsupport-em-duration-value").value);
+                    formData.set("em_duration_unit", document.getElementById("techsupport-em-duration-unit").value);
+                    formData.set("ts_send", document.getElementById("techsupport-em-send").checked ? "1" : "0");
+                    return formData;
+                },
+            });
+        })();
+    </script>
+
+    <script>
+        // Top-level page tabs (IP Lookup / Appliances). Deliberately
+        // separate classes/selectors from the per-IP .tab-btn/.tab-panel
+        // switcher above -- sharing them would make this loop's global
+        // querySelectorAll toggle the per-IP tabs (and vice versa) since
+        // both live in the same document.
+        document.querySelectorAll(".page-tab-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const target = btn.dataset.pageTabTarget;
+                document.querySelectorAll(".page-tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+                document.querySelectorAll(".page-tab-panel").forEach(panel => {
+                    panel.classList.toggle("page-tab-panel-hidden", panel.dataset.pageTabPanel !== target);
+                });
+            });
+        });
+
+        // Templates tab -- David's ask, 2026-08-26: generate a single,
+        // self-contained bash script that can be copied onto a DIFFERENT
+        // EM this app has no live connection to and run there directly.
+        // Entirely client-side (window.open/Blob, no fetch) -- there's no
+        // live data to pull from a box this app has never talked to, so
+        // every input is typed by hand, and the whole thing is just
+        // string templating + a browser-side file download, no server
+        // round trip needed at all. Review -> Proceed -> Download mirrors
+        // the same "show the truth before acting" ritual as the real
+        // Tech Support panels, even though here Review and Proceed both
+        // just (re)render the same text -- Proceed is the explicit "I've
+        // read it, lock it in" gate before Download unlocks. Any form
+        // edit after Review invalidates Proceed/Download again, so a
+        // downloaded script can never silently mismatch what was shown.
+        (function () {
+            const panel = document.querySelector('[data-page-tab-panel="templates"]');
+            if (!panel) return;
+
+            const companyEl = document.getElementById("tmpl-company");
+            const caseEl = document.getElementById("tmpl-case");
+            const sendEl = document.getElementById("tmpl-send");
+            const emIpEl = document.getElementById("tmpl-em-ip");
+            const appliancesEl = document.getElementById("tmpl-appliances");
+            const pluginTbody = document.getElementById("tmpl-plugin-tbody");
+            const dbTbody = document.getElementById("tmpl-db-tbody");
+            const ipTbody = document.getElementById("tmpl-ip-tbody");
+            const durationValueEl = document.getElementById("tmpl-duration-value");
+            const durationUnitEl = document.getElementById("tmpl-duration-unit");
+            const reviewBtn = document.getElementById("tmpl-review-btn");
+            const proceedBtn = document.getElementById("tmpl-proceed-btn");
+            const downloadBtn = document.getElementById("tmpl-download-btn");
+            const statusEl = document.getElementById("tmpl-status");
+            const previewWrap = document.getElementById("tmpl-preview-wrap");
+            const previewEl = document.getElementById("tmpl-preview");
+            const filenameEl = document.getElementById("tmpl-filename");
+
+            const IP_RE = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$/;
+            const NAME_RE = /^[A-Za-z0-9._-]{1,60}$/;
+            const PLUGIN_RE = /^[a-z][a-z0-9_]{1,40}$/;
+            const TABLE_RE = /^[a-z][a-z0-9_]{0,62}$/;
+
+            function escapeHtml(s) {
+                return (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            function knownTargets() {
+                const targets = [];
+                const em = emIpEl.value.trim();
+                if (em) targets.push(em);
+                appliancesEl.value.split("\n").map(l => l.trim()).filter(Boolean).forEach(ip => {
+                    if (!targets.includes(ip)) targets.push(ip);
+                });
+                return targets;
+            }
+
+            function targetOptions(selected) {
+                const targets = knownTargets();
+                if (!targets.length) return "<option value=\"\">-- set EM IP / appliances above --</option>";
+                return targets.map(t =>
+                    "<option value=\"" + escapeHtml(t) + "\"" + (t === selected ? " selected" : "") + ">" + escapeHtml(t) + "</option>"
+                ).join("");
+            }
+
+            function refreshAllTargetSelects() {
+                document.querySelectorAll(".tmpl-target-select").forEach(sel => {
+                    const current = sel.value;
+                    sel.innerHTML = targetOptions(current);
+                });
+                invalidatePreview();
+            }
+
+            function invalidatePreview() {
+                proceedBtn.disabled = true;
+                downloadBtn.disabled = true;
+                previewWrap.style.display = "none";
+                statusEl.textContent = "";
+            }
+
+            function addRow(tbody, cellsHtml) {
+                const tr = document.createElement("tr");
+                tr.innerHTML = cellsHtml;
+                tbody.appendChild(tr);
+                tr.querySelectorAll("input, select").forEach(el => el.addEventListener("input", invalidatePreview));
+                tr.querySelector(".tmpl-row-remove").addEventListener("click", () => { tr.remove(); invalidatePreview(); });
+                return tr;
+            }
+
+            document.getElementById("tmpl-plugin-add").addEventListener("click", () => {
+                addRow(pluginTbody,
+                    "<td><input type=\"text\" class=\"tmpl-plugin-name\" placeholder=\"sw\" style=\"width:8em\"></td>" +
+                    "<td><select class=\"tmpl-target-select\">" + targetOptions() + "</select></td>" +
+                    "<td><select class=\"tmpl-plugin-level\">" +
+                    [0,1,2,3,4,5,6,7,8,9,10,11,12].map(l => "<option value=\"" + l + "\"" + (l === 4 ? " selected" : "") + ">" + l + "</option>").join("") +
+                    "</select></td>" +
+                    "<td><input type=\"number\" class=\"tmpl-plugin-minutes\" value=\"60\" min=\"1\" max=\"1440\" style=\"width:5em\"> min</td>" +
+                    "<td><button type=\"button\" class=\"btn-small btn-secondary tmpl-row-remove\">Remove</button></td>"
+                );
+            });
+
+            document.getElementById("tmpl-db-add").addEventListener("click", () => {
+                addRow(dbTbody,
+                    "<td><input type=\"text\" class=\"tmpl-db-name\" placeholder=\"source_log\" style=\"width:10em\"></td>" +
+                    "<td><select class=\"tmpl-target-select\">" + targetOptions() + "</select></td>" +
+                    "<td><button type=\"button\" class=\"btn-small btn-secondary tmpl-row-remove\">Remove</button></td>"
+                );
+            });
+
+            document.getElementById("tmpl-ip-add").addEventListener("click", () => {
+                addRow(ipTbody,
+                    "<td><input type=\"text\" class=\"tmpl-ip-addr\" placeholder=\"10.1.1.1\" style=\"width:10em\"></td>" +
+                    "<td><select class=\"tmpl-target-select\">" + targetOptions() + "</select></td>" +
+                    "<td><button type=\"button\" class=\"btn-small btn-secondary tmpl-row-remove\">Remove</button></td>"
+                );
+            });
+
+            [emIpEl, appliancesEl].forEach(el => el.addEventListener("input", refreshAllTargetSelects));
+            [companyEl, caseEl, sendEl, durationValueEl, durationUnitEl].forEach(el => el.addEventListener("input", invalidatePreview));
+
+            function sanitizeFilenamePart(s) {
+                return (s || "").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "Untitled";
+            }
+
+            function shQuote(s) {
+                // Single-quoted, POSIX-safe -- closes the quote, escapes any embedded ', reopens it.
+                return "'" + String(s).replace(/'/g, "'\\''") + "'";
+            }
+
+            // Reads and validates every field; returns {ok, error} or {ok:true, data}.
+            function collectFormData() {
+                const company = companyEl.value.trim();
+                const caseName = caseEl.value.trim();
+                if (!company || !NAME_RE.test(company)) return { ok: false, error: "Company Name is required (letters, numbers, '.', '-', '_' only)." };
+                if (!caseName || !NAME_RE.test(caseName)) return { ok: false, error: "Case Name is required (letters, numbers, '.', '-', '_' only)." };
+                const emIp = emIpEl.value.trim();
+                if (!IP_RE.test(emIp)) return { ok: false, error: "EM IP Address is required and must be a valid IPv4 address." };
+                const appliances = appliancesEl.value.split("\n").map(l => l.trim()).filter(Boolean);
+                for (const a of appliances) {
+                    if (!IP_RE.test(a)) return { ok: false, error: "'" + a + "' in the Appliance List is not a valid IPv4 address." };
+                }
+
+                const plugins = [];
+                for (const tr of pluginTbody.querySelectorAll("tr")) {
+                    const name = tr.querySelector(".tmpl-plugin-name").value.trim();
+                    const target = tr.querySelector(".tmpl-target-select").value;
+                    const level = tr.querySelector(".tmpl-plugin-level").value;
+                    const minutes = parseInt(tr.querySelector(".tmpl-plugin-minutes").value, 10);
+                    if (!name && !target) continue;
+                    if (!PLUGIN_RE.test(name)) return { ok: false, error: "Plugin name '" + name + "' looks invalid (lowercase letters/numbers/underscore)." };
+                    if (!target) return { ok: false, error: "Every plugin row needs a target (set EM IP / Appliance List first)." };
+                    if (!(minutes >= 1 && minutes <= 1440)) return { ok: false, error: "Plugin '" + name + "' needs a duration between 1 and 1440 minutes." };
+                    plugins.push({ name, target, level, minutes });
+                }
+
+                const dbtables = [];
+                for (const tr of dbTbody.querySelectorAll("tr")) {
+                    const name = tr.querySelector(".tmpl-db-name").value.trim();
+                    const target = tr.querySelector(".tmpl-target-select").value;
+                    if (!name && !target) continue;
+                    if (!TABLE_RE.test(name)) return { ok: false, error: "Table name '" + name + "' looks invalid." };
+                    if (!target) return { ok: false, error: "Every DB table row needs a target." };
+                    dbtables.push({ name, target });
+                }
+
+                const hosts = [];
+                for (const tr of ipTbody.querySelectorAll("tr")) {
+                    const ip = tr.querySelector(".tmpl-ip-addr").value.trim();
+                    const target = tr.querySelector(".tmpl-target-select").value;
+                    if (!ip && !target) continue;
+                    if (!IP_RE.test(ip)) return { ok: false, error: "Host IP '" + ip + "' is not a valid IPv4 address." };
+                    if (!target) return { ok: false, error: "Every host row needs an appliance." };
+                    hosts.push({ ip, target });
+                }
+
+                if (!plugins.length && !dbtables.length && !hosts.length) {
+                    return { ok: false, error: "Add at least one plugin, DB table, or host -- otherwise there's nothing for the script to collect." };
+                }
+
+                const durationValue = parseInt(durationValueEl.value, 10);
+                const durationUnit = durationUnitEl.value;
+                if (!(durationValue >= 1 && durationValue <= 9999)) return { ok: false, error: "General duration must be between 1 and 9999." };
+
+                return {
+                    ok: true,
+                    data: {
+                        company, caseName, send: sendEl.checked, emIp, appliances, plugins, dbtables, hosts,
+                        generalDuration: durationValue + durationUnit,
+                    },
+                };
+            }
+
+            // Builds the actual bash script text. Mirrors this app's own real command construction
+            // (_build_combined_bundle/_centralize_bundle/_split_if_oversized in webapp-query.py) translated
+            // to plain bash, since this script has no Python/Flask to lean on once it's off this network --
+            // it runs ON the target EM, SSHing to its own appliances the same way ssh_appliance() does here.
+            function buildScript(d) {
+                const lines = [];
+                const push = s => lines.push(s === undefined ? "" : s);
+                const nowDisplay = new Date().toISOString();
+
+                push("#!/bin/bash");
+                push("# ForeScout Tech-Support Template Script");
+                push("# Generated by the Forescout Tech Support Log Collection Tool on " + nowDisplay);
+                push("# Company: " + d.company + "   Case: " + d.caseName);
+                push("# Run this ON the target Enterprise Manager -- it SSHes to its own appliances");
+                push("# using whatever root trust already exists between this EM and them, the same way");
+                push("# this tool's own EM-side wrapper does. Nothing here depends on the tool that");
+                push("# generated it -- copy this one file anywhere and run it.");
+                push("set -euo pipefail");
+                push("");
+                push("EM_IP=" + shQuote(d.emIp));
+                push("COMPANY=" + shQuote(d.company));
+                push("CASE_REF=" + shQuote(d.caseName));
+                push("SEND_FLAG=" + shQuote(d.send ? "--send" : ""));
+                push("CASE_DIR=\"/shared/shared/case/${CASE_REF}\"");
+                push("SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10)");
+                push("");
+                push("run_on() {");
+                push("    # run_on <target_ip> <command...> -- runs locally if target is the EM, else over ssh.");
+                push("    local target=\"$1\"; shift");
+                push("    if [ \"$target\" = \"$EM_IP\" ]; then");
+                push("        bash -c \"$*\"");
+                push("    else");
+                push("        ssh \"${SSH_OPTS[@]}\" \"root@${target}\" \"$*\"");
+                push("    fi");
+                push("}");
+                push("");
+                push("mkdir -p \"$CASE_DIR\"");
+                push("");
+
+                // --- Debug enable + shared wait (mirrors app.py's start_techsupport_run: every plugin
+                // enabled up front, then ONE wait covering the longest requested duration, then collect) ---
+                let maxMinutes = 0;
+                if (d.plugins.length) {
+                    push("echo \"=== Enabling debug ===\"");
+                    d.plugins.forEach(p => {
+                        maxMinutes = Math.max(maxMinutes, p.minutes);
+                        push("echo \"" + p.target + ": fstool " + p.name + " debug " + p.level + " " + p.minutes + "m\"");
+                        push("run_on " + shQuote(p.target) + " \"fstool " + p.name + " debug " + p.level + " " + p.minutes + "m\"");
+                    });
+                    push("");
+                    push("echo \"=== Waiting " + (maxMinutes * 60) + "s for the longest debug window to elapse ===\"");
+                    push("sleep " + (maxMinutes * 60));
+                    push("");
+                }
+
+                // --- Group plugins / db tables / hosts by target, same shape as _group_plugins_by_target ---
+                const targets = new Map(); // target -> {plugins: [], dbtables: [], hosts: []}
+                function ensureTarget(t) {
+                    if (!targets.has(t)) targets.set(t, { plugins: [], dbtables: [], hosts: [] });
+                    return targets.get(t);
+                }
+                d.plugins.forEach(p => ensureTarget(p.target).plugins.push(p.name));
+                d.dbtables.forEach(t => ensureTarget(t.target).dbtables.push(t.name));
+                d.hosts.forEach(h => ensureTarget(h.target).hosts.push(h.ip));
+                // A host's own appliance always gets a bundle even with nothing else pointed at it (matches
+                // this tool's own "own-appliance-always-bundle" rule, Round 25) -- already covered since
+                // ensureTarget() above is called for every host's target regardless of plugins/dbtables.
+                if (targets.size === 0) ensureTarget(d.emIp); // general duration path, nothing target-specific at all
+
+                push("echo \"=== Building tech-support bundle(s) ===\"");
+                Array.from(targets.keys()).sort().forEach(target => {
+                    const t = targets.get(target);
+                    const duration = d.plugins.length ? (maxMinutes + "m") : d.generalDuration;
+                    const pluginFlags = t.plugins.map(p => "-p " + p).join(" ");
+                    const dbtableFlags = t.dbtables.map(n => "--dbtable " + n).join(" ");
+
+                    push("");
+                    push("# --- Target: " + target + " ---");
+                    push("TARGET=" + shQuote(target));
+                    push("mkdir -p \"$CASE_DIR/$TARGET\"");
+
+                    const attachVars = [];
+                    t.hosts.forEach((ip, i) => {
+                        const varName = "HOSTINFO_" + i + "_" + ip.replace(/\./g, "_");
+                        push("echo \"  fetching hostinfo for " + ip + "\"");
+                        push(varName + "=\"/tmp/hostinfo-" + ip.replace(/\./g, "-") + "-$$.txt\"");
+                        push("run_on \"$TARGET\" \"fstool hostinfo " + ip + " > " + "$" + varName + "\"");
+                        attachVars.push(varName);
+                    });
+                    const attachFlags = attachVars.map(v => "--attach-file \\\"$" + v + "\\\"").join(" ");
+
+                    const flagParts = [pluginFlags, attachFlags, dbtableFlags].filter(Boolean).join(" ");
+                    // Single, consistently double-quoted assignment -- the embedded \"...\" pairs survive
+                    // this assignment as LITERAL quote characters around each variable's expanded value, so
+                    // when run_on later re-parses $TS_CMD as a brand-new command line (bash -c "$*" / ssh
+                    // "$*"), each value is correctly treated as one argument again, spaces and all.
+                    push("TS_CMD=\"fstool tech-support " + (flagParts ? flagParts + " " : "") +
+                        "-comment \\\"$CASE_REF\\\" --pack $SEND_FLAG -company \\\"$COMPANY\\\" -t " + duration + "\"");
+                    push("echo \"  $TS_CMD\"");
+                    push("OUTPUT=$(run_on \"$TARGET\" \"$TS_CMD\")");
+                    push("echo \"$OUTPUT\"");
+                    push("FILE=$(echo \"$OUTPUT\" | grep -oE 'File:[[:space:]]*[^[:space:]]+' | awk '{print $2}')");
+                    push("if [ -z \"$FILE\" ]; then echo \"  WARNING: no File: line in output for $TARGET -- skipping centralize\"; else");
+                    if (t.hosts.length) {
+                        push("    run_on \"$TARGET\" \"rm -f " + attachVars.map(v => "\\\"$" + v + "\\\"").join(" ") + "\"");
+                    }
+                    push("    if [ \"$TARGET\" = \"$EM_IP\" ]; then");
+                    push("        mv \"$FILE\" \"$CASE_DIR/$TARGET/\"");
+                    push("    else");
+                    push("        scp \"${SSH_OPTS[@]}\" \"root@${TARGET}:${FILE}\" \"$CASE_DIR/$TARGET/\"");
+                    push("        ssh \"${SSH_OPTS[@]}\" \"root@${TARGET}\" \"rm -f '$FILE'\"");
+                    push("    fi");
+                    push("    BUNDLE=\"$CASE_DIR/$TARGET/$(basename \"$FILE\")\"");
+                    push("    SIZE=$(stat -c%s \"$BUNDLE\" 2>/dev/null || echo 0)");
+                    push("    if [ \"$SIZE\" -gt 1610612736 ]; then");
+                    push("        echo \"  over 1.5GB, splitting into 500MB parts\"");
+                    push("        split -b 500M \"$BUNDLE\" \"${BUNDLE}.part-\"");
+                    push("        rm -f \"$BUNDLE\"");
+                    push("    fi");
+                    push("    echo \"  done: $BUNDLE\"");
+                    push("fi");
+                });
+
+                push("");
+                push("echo \"=== Done. Bundles are under $CASE_DIR ===\"");
+                return lines.join("\n") + "\n";
+            }
+
+            reviewBtn.addEventListener("click", () => {
+                const parsed = collectFormData();
+                if (!parsed.ok) { window.alert(parsed.error); return; }
+                const script = buildScript(parsed.data);
+                previewEl.value = script;
+                const filename = sanitizeFilenamePart(parsed.data.company) + "-" + sanitizeFilenamePart(parsed.data.caseName) + "-TechSupportTemplate.sh";
+                filenameEl.textContent = filename;
+                previewWrap.style.display = "";
+                proceedBtn.disabled = false;
+                downloadBtn.disabled = true;
+                statusEl.textContent = "Reviewed -- click Proceed to lock this in.";
+                proceedBtn.dataset.script = script;
+                proceedBtn.dataset.filename = filename;
+            });
+
+            proceedBtn.addEventListener("click", () => {
+                downloadBtn.disabled = false;
+                downloadBtn.dataset.script = proceedBtn.dataset.script;
+                downloadBtn.dataset.filename = proceedBtn.dataset.filename;
+                statusEl.textContent = "Ready -- click Download to save " + proceedBtn.dataset.filename;
+            });
+
+            // David's ask, 2026-08-26: let the user pick WHERE to save it, not just drop it in the
+            // browser's default downloads folder. showSaveFilePicker() (File System Access API) opens a
+            // real native "Save As" dialog -- Chrome/Edge support it, Firefox/Safari don't (no polyfill
+            // exists; it's a real browser capability gap, not something fixable here). Falls back to the
+            // plain Blob+<a download> approach on anything that lacks it, or if the picker itself errors
+            // for a reason other than the user cancelling -- that fallback still respects the browser's
+            // OWN "always ask where to save" setting if the user has that turned on.
+            downloadBtn.addEventListener("click", async () => {
+                const script = downloadBtn.dataset.script;
+                const filename = downloadBtn.dataset.filename;
+
+                if (window.showSaveFilePicker) {
+                    try {
+                        const handle = await window.showSaveFilePicker({
+                            suggestedName: filename,
+                            types: [{ description: "Shell script", accept: { "text/x-sh": [".sh"] } }],
+                        });
+                        const writable = await handle.createWritable();
+                        await writable.write(script);
+                        await writable.close();
+                        statusEl.textContent = "Saved " + filename;
+                        return;
+                    } catch (err) {
+                        if (err && err.name === "AbortError") { statusEl.textContent = "Save cancelled."; return; }
+                        // Any other error (e.g. a permissions issue) -- fall through to the plain download below
+                        // rather than leaving the user with nothing.
+                    }
+                }
+
+                // MIME type deliberately "text/plain", not "text/x-sh" -- David reported this fallback path
+                // downloading as "Unconfirmed ######.crdownload" instead of the real filename, which is a
+                // Chrome download-manager behavior for file types it scrutinizes as executable-ish (.sh is
+                // one of them); labeling the blob as plain text rather than a shell-script MIME type keeps
+                // the actual file content and .sh extension (via `download=`) unchanged but gives Chrome
+                // less reason to hold it in that temp state. Can't confirm this fully resolves it without a
+                // real browser to click through, though -- showSaveFilePicker above is the real fix (no
+                // download-manager scan at all, direct file write) but needs a secure context (HTTPS),
+                // which this deployment doesn't have yet (Phase C).
+                const blob = new Blob([script], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                let note = "";
+                if (!window.showSaveFilePicker) {
+                    note = window.isSecureContext
+                        ? " (this browser doesn't support choosing a save location)"
+                        : " (choosing a save location needs HTTPS -- not yet available on this deployment)";
+                }
+                statusEl.textContent = "Downloaded " + filename + note;
+            });
+
+            invalidatePreview();
+        })();
+
+        // Look up spinner -- David's ask: show the click registered. This
+        // is a real full-page form POST (not fetch/AJAX), so there's
+        // nothing to poll -- just show feedback the instant "submit"
+        // fires and let the browser's own navigation to the reloaded
+        // page take it away naturally once the response arrives.
+        // Disabling the button also stops an impatient double-click from
+        // firing a second identical lookup while the first is still in
+        // flight.
+        (function () {
+            const form = document.querySelector(".lookup-form");
+            const btn = document.getElementById("lookup-submit-btn");
+            const spinner = document.getElementById("lookup-spinner");
+            if (!form || !btn || !spinner) return;
+            form.addEventListener("submit", () => {
+                btn.disabled = true;
+                btn.textContent = "Looking up…";
+                spinner.style.display = "";
+            });
+        })();
+    </script>
 </body>
 </html>

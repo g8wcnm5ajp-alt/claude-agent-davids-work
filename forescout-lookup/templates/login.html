@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Forescout Tech Support Log Collection Tool -- Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main style="max-width:26em; margin:4rem auto;">
+        <h1>Forescout Tech Support Log Collection Tool</h1>
+        <p class="subtitle">Sign in to continue.</p>
+
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+
+        <div class="card">
+            <form method="post" action="/login">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="tree-filter-row" style="display:block; margin-bottom:0.75rem;">
+                    <label class="tree-filter-toggle" style="display:block;">Username
+                        <input type="text" name="username" autocomplete="username" required autofocus
+                               style="width:100%; margin-top:0.3rem;">
+                    </label>
+                </div>
+                <div class="tree-filter-row" style="display:block; margin-bottom:1rem;">
+                    <label class="tree-filter-toggle" style="display:block;">Password
+                        <input type="password" name="password" autocomplete="current-password" required
+                               style="width:100%; margin-top:0.3rem;">
+                    </label>
+                </div>
+                <button type="submit">Sign in</button>
+            </form>
+        </div>
+    </main>
+</body>
+</html>
