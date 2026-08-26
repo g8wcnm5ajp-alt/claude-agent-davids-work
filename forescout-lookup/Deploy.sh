@@ -7,12 +7,11 @@
 # What this does, in order (each step is idempotent -- safe to re-run
 # this whole script, e.g. to pick up a renewed cert or redeploy a
 # newer image, without duplicating anything):
-#   1. Generates a dedicated SSH keypair for this app (if one doesn't
-#      already exist) and registers its public half in this EM's own
-#      authorized_keys, restricted to ONLY the existing webapp-query.py
-#      forced-command wrapper (already deployed on this EM, used by
-#      this app the same way as any other caller) -- the private key
-#      never leaves this box.
+#   1. Installs the bundled webapp-query.py forced-command wrapper onto
+#      this EM (if not already present), generates a dedicated SSH
+#      keypair for this app, and registers its public half in this
+#      EM's own authorized_keys restricted to ONLY that wrapper -- the
+#      private key never leaves this box.
 #   2. Uses a cert.pem + private.key already dropped into certs/ by
 #      hand (e.g. one issued by your own internal CA), or falls back
 #      to copying this EM's own Apache SSL cert if none was supplied.
@@ -41,6 +40,7 @@ APACHE_CERT="/usr/local/forescout/etc/net_portal_ssl/cert.pem"
 APACHE_KEY="/usr/local/forescout/etc/net_portal_ssl/private.key"
 AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
 WEBAPP_QUERY_WRAPPER="/root/scripts/webapp-query/webapp-query.py"
+BUNDLED_WEBAPP_QUERY="${DIR}/webapp-query.py"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Must be run as root." >&2
@@ -62,7 +62,22 @@ if [ ! -x "$(command -v fstool)" ]; then
     exit 1
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 not found on this EM's host OS -- required to run webapp-query.py." >&2
+    exit 1
+fi
+
+if [ ! -f "$BUNDLED_WEBAPP_QUERY" ]; then
+    echo "Error: ${BUNDLED_WEBAPP_QUERY} not found -- run this from inside the unpacked package." >&2
+    exit 1
+fi
+
 echo "=== 1. SSH key for this app's own EM->appliance/EM calls ==="
+mkdir -p "$(dirname "$WEBAPP_QUERY_WRAPPER")"
+cp "$BUNDLED_WEBAPP_QUERY" "$WEBAPP_QUERY_WRAPPER"
+chmod 755 "$WEBAPP_QUERY_WRAPPER"
+echo "Installed webapp-query.py at $WEBAPP_QUERY_WRAPPER"
+
 mkdir -p "$KEY_DIR"
 if [ ! -f "$KEY_FILE" ]; then
     ssh-keygen -t rsa -b 4096 -f "$KEY_FILE" -N "" -C "$KEY_COMMENT" -q
@@ -72,11 +87,6 @@ else
 fi
 chmod 600 "$KEY_FILE"
 chmod 644 "${KEY_FILE}.pub"
-
-if [ ! -f "$WEBAPP_QUERY_WRAPPER" ]; then
-    echo "Error: $WEBAPP_QUERY_WRAPPER not found -- deploy webapp-query.py to this EM first." >&2
-    exit 1
-fi
 
 mkdir -p "$(dirname "$AUTHORIZED_KEYS")"
 touch "$AUTHORIZED_KEYS"
@@ -171,6 +181,18 @@ else
     echo "Docker network $NETWORK_NAME already exists -- skipped"
 fi
 
+# Docker's "host-gateway" magic value for --add-host is unreliable on
+# some bridge-network setups (seen in practice: it resolves to <nil>
+# in /etc/hosts instead of a real IP). Resolving the network's own
+# gateway IP ourselves and passing that concrete address instead is
+# what actually works every time.
+BRIDGE_GATEWAY="$(docker network inspect "$NETWORK_NAME" --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}')"
+if [ -z "$BRIDGE_GATEWAY" ]; then
+    echo "Error: could not determine ${NETWORK_NAME}'s gateway IP." >&2
+    exit 1
+fi
+echo "Container will reach this EM via host.docker.internal -> ${BRIDGE_GATEWAY}"
+
 echo
 echo "=== 4. Loading and starting the container ==="
 docker load -i "${DIR}/image.tar"
@@ -186,7 +208,7 @@ docker run -d \
     --name "$CONTAINER_NAME" \
     --network "$NETWORK_NAME" \
     --restart unless-stopped \
-    --add-host=host.docker.internal:host-gateway \
+    --add-host="host.docker.internal:${BRIDGE_GATEWAY}" \
     -p "${HTTPS_PORT}:5000" \
     -v "${KEY_DIR}:/keys:ro" \
     -v "${CERT_DIR}:/certs" \

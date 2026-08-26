@@ -13,6 +13,10 @@
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+a { color: var(--text); text-decoration: underline; }
+a:visited { color: var(--text); }
+a:hover { color: var(--accent); }
+
 body {
     background: var(--bg);
     color: var(--text);
@@ -27,6 +31,9 @@ main {
 
 h1 { margin-bottom: 0.2rem; }
 .subtitle { color: var(--muted); margin-top: 0; }
+
+.refresh-ip-form { display: inline-block; margin-left: 0.75em; vertical-align: middle; }
+.btn-small { padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; }
 
 .lookup-form {
     display: flex;
@@ -64,6 +71,8 @@ button:hover { opacity: 0.9; }
     border-radius: 6px;
     margin: 1rem 0;
 }
+
+.case-history-error { color: var(--err); }
 
 .grid {
     display: grid;
@@ -128,7 +137,120 @@ table.params td { word-break: break-all; max-width: 380px; }
 .conn-unknown { color: var(--muted); }
 tr.row-prior-connection { opacity: 0.55; }
 
-.tabs { display: flex; gap: 0.4rem; margin: 1.25rem 0 0.5rem; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0.6rem; }
+.tabs { display: flex; gap: 0.4rem; margin: 1.25rem 0 0.5rem; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0.6rem; align-items: center; }
 .tab-btn { background: var(--panel); color: var(--muted); border: 1px solid var(--border); font-weight: 600; }
 .tab-btn.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
 .tab-panel-hidden { display: none; }
+
+/* Separate class from .tab-btn on purpose -- the multi-host result-tab switcher (index.html's global
+   document.querySelectorAll(".tab-btn")) binds to EVERY element with that class, so the tree-view tabs
+   (Current view/Graphic view) need their own class to avoid also triggering that handler (confirmed live,
+   2026-08-26: it did, and hid every host's result panel since its data-tab-target check found nothing). */
+.tree-view-tab-btn { background: var(--panel); color: var(--muted); border: 1px solid var(--border); font-weight: 600; }
+.tree-view-tab-btn.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+/* Deliberately NOT sharing the .tabs class -- that class is also matched by the tab-close cleanup's
+   ".tabs:not(.page-tabs)" selector (index.html), which document.querySelector()s for and removes when a
+   multi-host lookup drops to one result; a shared class risked it finding/removing the wrong element. */
+.tree-view-tabs { display: flex; gap: 0.4rem; margin: 0.75rem 0 0.5rem; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; align-items: center; }
+
+.tree-graphic-container { overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.tree-graphic-node rect { stroke: var(--border); stroke-width: 1; cursor: pointer; }
+.tree-graphic-node text { fill: var(--text); font-size: 11px; font-family: inherit; pointer-events: none; }
+.tree-graphic-node.tree-graphic-folder rect { fill: var(--panel); }
+.tree-graphic-node.tree-graphic-rule rect { fill: rgba(91, 157, 255, 0.15); stroke: var(--accent); }
+.tree-graphic-node.tree-graphic-rule.tree-graphic-disabled rect { fill: var(--panel); stroke: var(--muted); opacity: 0.6; }
+.tree-graphic-node.tree-graphic-inner_rule rect { fill: rgba(139, 149, 171, 0.12); }
+.tree-graphic-node.tree-graphic-highlight rect { fill: rgba(224, 168, 80, 0.35); stroke: var(--both); stroke-width: 2; }
+.tree-graphic-node.tree-graphic-path rect { fill: rgba(224, 168, 80, 0.12); stroke: var(--both); }
+.tree-graphic-node.tree-graphic-collapsed rect { stroke-dasharray: 3 2; }
+.tree-graphic-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+.tree-graphic-collapse-marker { fill: var(--muted); font-size: 10px; pointer-events: none; }
+
+.page-tabs { margin: 1.25rem 0 1.5rem; border-bottom-width: 2px; }
+.page-tab-btn { background: var(--panel); color: var(--muted); border: 1px solid var(--border); font-weight: 700; padding: 0.55rem 1.3rem; font-size: 0.95rem; }
+.page-tab-btn.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+.page-tab-panel-hidden { display: none; }
+.page-tab-badge { background: var(--err); color: #fff; font-size: 0.7em; font-weight: 700; padding: 0.1em 0.5em; border-radius: 999px; margin-left: 0.35em; }
+
+.appliances-tabbar-buttons { display: flex; gap: 0.4rem; flex-wrap: nowrap; }
+.tab-page-btn { background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 700; padding: 0.4rem 0.75rem; }
+.tab-page-btn:disabled { opacity: 0.35; cursor: default; }
+
+.spinner {
+    display: inline-block;
+    width: 1.1em;
+    height: 1.1em;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 0.5em;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.appliance-error-table { margin: 0.5rem 0 1rem; }
+.appliance-error-table pre { white-space: pre-wrap; font-size: 0.82rem; margin: 0; font-family: inherit; }
+
+.diag-section-heading { margin: 1.5rem 0 0.5rem; color: var(--text); }
+
+/* fstool's own diag/*.html and errors/<category>/summary.html fragments,
+   embedded as-is -- the app's table/th/td rules above already apply by
+   element, this just covers the surrounding h2/p/pre/code/hr markup so
+   it doesn't fall back to unstyled black-on-white against the dark page. */
+.diag-html h2 { font-size: 0.95rem; margin: 1rem 0 0.4rem; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+.diag-html h2:first-child { margin-top: 0; }
+.diag-html p { color: var(--muted); font-size: 0.85rem; margin: 0.3rem 0; }
+.diag-html hr { border: none; border-top: 1px solid var(--border); margin: 0.6rem 0; }
+.diag-html pre { white-space: pre-wrap; font-size: 0.82rem; background: rgba(255, 255, 255, 0.03); padding: 0.5rem; border-radius: 6px; font-family: inherit; }
+.diag-html code { font-family: inherit; }
+.diag-html table { margin: 0.4rem 0 1rem; font-size: 0.85rem; }
+.diag-html table td, .diag-html table th { white-space: normal; }
+
+.btn-secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+.btn-gold { background: var(--both); color: #0b1220; }
+
+/* An <a> styled as a button (e.g. "Clear results") needs the same reset
+   `button {}` gives real <button> elements for free -- element-scoped
+   base rule doesn't apply to anchors. */
+a.btn-small { display: inline-flex; align-items: center; border-radius: 6px; cursor: pointer; text-decoration: none; }
+
+.tab-close {
+    display: inline-block;
+    margin-left: 0.5em;
+    opacity: 0.6;
+    font-weight: 700;
+}
+.tab-close:hover { opacity: 1; }
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 1rem;
+}
+.modal-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    max-width: 900px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+}
+.modal-actions { display: flex; gap: 0.6rem; justify-content: flex-end; margin-top: 1rem; }
+.command-preview {
+    white-space: pre-wrap;
+    font-size: 0.82rem;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    margin: 0.4rem 0 1rem;
+}
+.preview-warning { color: var(--both); font-size: 0.85rem; margin: 0.3rem 0; }

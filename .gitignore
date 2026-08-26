@@ -1,4 +1,5 @@
 forescout-lookup/keys/
 forescout-lookup/data/
+forescout-lookup/dist/
 __pycache__/
 *.pyc

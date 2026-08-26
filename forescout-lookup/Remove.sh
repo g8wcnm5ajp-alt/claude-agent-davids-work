@@ -19,6 +19,7 @@ FW_HOOK_NAME="ForeScoutTechSupportHelper"
 HTTPS_PORT=8443
 KEY_COMMENT="forescout-tech-support-collector-em"
 AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
+WEBAPP_QUERY_WRAPPER="/root/scripts/webapp-query/webapp-query.py"
 
 PURGE=0
 if [ "${1:-}" = "--purge" ]; then
@@ -75,12 +76,16 @@ fi
 
 if [ "$PURGE" -eq 1 ]; then
     echo
-    echo "=== 5. --purge: removing keys/, certs/, and data/ ==="
+    echo "=== 5. --purge: removing keys/, certs/, data/, and the installed wrapper ==="
     rm -rf "${DIR}/keys" "${DIR}/certs" "${DIR}/data"
+    if [ -f "$WEBAPP_QUERY_WRAPPER" ]; then
+        rm -f "$WEBAPP_QUERY_WRAPPER"
+        echo "Removed $WEBAPP_QUERY_WRAPPER"
+    fi
     echo "Removed ${DIR}/keys, ${DIR}/certs, ${DIR}/data"
 else
     echo
-    echo "Leaving ${DIR}/keys, ${DIR}/certs, and ${DIR}/data in place (pass --purge to remove them too)."
+    echo "Leaving ${DIR}/keys, ${DIR}/certs, ${DIR}/data, and $WEBAPP_QUERY_WRAPPER in place (pass --purge to remove those too)."
 fi
 
 echo
