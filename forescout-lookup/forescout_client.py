@@ -443,6 +443,58 @@ def clear_techsupport_log(timeout=15):
     return _run_verb("techsupportlogclear", timeout=timeout)
 
 
+# Mirrors webapp-query.py's own BUNDLE_PATH_RE -- checked here too before
+# ever spending an SSH round-trip on an obviously-bogus path, but the EM
+# side re-validates independently regardless (never trust the browser).
+BUNDLE_PATH_RE = re.compile(r"^/shared/shared/case/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$")
+
+
+def download_techsupport_bundle(path, timeout=600):
+    """
+    Streams a previously-built bundle (or its -commands.txt / split
+    .part-xx sibling) off the EM -- David's ask, 2026-08-27: download the
+    built tech-support bundles via the web app's own HTTP session rather
+    than an admin scp-ing them off the EM by hand.
+
+    Returns the live subprocess.Popen so app.py's route can stream
+    proc.stdout straight into the browser response in chunks, without
+    ever holding a multi-hundred-MB (or multi-GB, pre-split) bundle
+    fully in this process's memory. Caller is responsible for reading
+    proc.stdout to EOF and calling proc.wait() (or just letting the
+    `with` in the Flask route's generator close it) -- this function
+    only handles the handshake: reading the first line to tell a real
+    "BEGIN-BINARY" stream apart from a JSON error response (missing
+    file, path rejected, etc.), matching what do_techsupport_download
+    on the EM side actually writes.
+    """
+    if not BUNDLE_PATH_RE.match(path or ""):
+        raise ForescoutClientError(f"'{path}' is not a recognized tech-support bundle path.")
+    if not os.path.isfile(SSH_KEY_PATH):
+        raise ForescoutClientError(
+            f"SSH key not found at {SSH_KEY_PATH} -- the container's key volume isn't mounted correctly."
+        )
+    cmd = [
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10", "-i", SSH_KEY_PATH, f"root@{EM_HOST}", f"techsupportdownload {path}",
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise ForescoutClientError("ssh is not available in this container.")
+
+    marker = proc.stdout.readline()
+    if marker.strip() != b"BEGIN-BINARY":
+        rest = proc.stdout.read()
+        proc.wait()
+        raw = marker + rest
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ForescoutClientError(f"Unexpected response from the EM: {raw[:300]!r}")
+        raise ForescoutClientError(data.get("error", "Unknown error downloading the bundle."))
+    return proc
+
+
 DURATION_RE = re.compile(r"^\d{1,4}[mh]$")
 
 

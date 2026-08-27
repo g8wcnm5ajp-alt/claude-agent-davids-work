@@ -18,15 +18,15 @@ import time
 import zipfile
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from forescout_client import (
     CASE_REF_RE, COMPANY_NAME_RE, LEVEL_RE, ForescoutClientError, arp_list, build_techsupport_em,
     build_techsupport_window_appliance, clear_techsupport_log, collect_techsupport, debug_set_appliance,
-    last_checked, list_appliances, lookup, matched_rules, policy_history, policy_tree, preview_techsupport,
-    preview_techsupport_em, raw_fields, run_show_errors, tail_techsupport_log, trace_defaults, trace_list,
-    trace_set,
+    download_techsupport_bundle, last_checked, list_appliances, lookup, matched_rules, policy_history,
+    policy_tree, preview_techsupport, preview_techsupport_em, raw_fields, run_show_errors,
+    tail_techsupport_log, trace_defaults, trace_list, trace_set,
 )
 
 app = Flask(__name__)
@@ -1646,6 +1646,43 @@ def api_techsupport_run_kill(run_id):
         return jsonify({"error": "run is not currently running"}), 400
     _update_ts_run(run_id, status="failed", finished_at=int(time.time()), error="Manually killed (was stuck).")
     return jsonify({"ok": True})
+
+
+@app.route("/techsupport/download", methods=["GET"])
+def techsupport_download_route():
+    """
+    Streams a built tech-support bundle (or its -commands.txt / split
+    .part-xx sibling) straight through this app's own HTTPS session --
+    David's ask, 2026-08-27: no more scp-ing bundles off the EM by hand
+    once a build finishes. `path` is whatever a completed run's own
+    bundles[].path (or .chunks[]) already reported back to the browser --
+    never accepted as free text, and re-validated against the same
+    /shared/shared/case/.../.../... shape on both this side and the EM's
+    own forced-command wrapper before anything is opened.
+    """
+    path = request.args.get("path", "")
+    try:
+        proc = download_techsupport_bundle(path)
+    except ForescoutClientError as e:
+        return str(e), 400
+
+    def generate():
+        try:
+            while True:
+                chunk = proc.stdout.read(262144)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.stdout.close()
+            proc.wait()
+
+    filename = os.path.basename(path) or "techsupport-bundle"
+    return Response(
+        generate(),
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------

@@ -535,11 +535,19 @@
             {% endif %}
             <div class="card">
                 <table>
-                    <tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th></tr>
+                    <tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th><th>Download</th></tr>
                     {% for b in result.bundles %}
                     <tr><td>{{ b.plugins|join(', ') }}</td><td>{{ b.hosts|join(', ') or '—' }}</td><td>{{ b.target }}</td><td>{{ "ok" if b.ok else "failed" }}</td>
                         <td>{% if b.chunks %}Split into {{ b.chunks|length }} parts (over 1.5GB):{% for c in b.chunks %}<div>{{ c }}</div>{% endfor %}{% else %}{{ b.path or '—' }}{% endif %}</td>
-                        <td>{{ b.size or '—' }}</td><td>{{ b.commands_log or '—' }}</td></tr>
+                        <td>{{ b.size or '—' }}</td><td>{{ b.commands_log or '—' }}</td>
+                        <td>
+                            {% if b.chunks %}
+                                {% for c in b.chunks %}<div><a href="/techsupport/download?path={{ c|urlencode }}">part {{ loop.index }}</a></div>{% endfor %}
+                            {% elif b.path %}
+                                <a href="/techsupport/download?path={{ b.path|urlencode }}">bundle</a>
+                            {% else %}—{% endif %}
+                            {% if b.commands_log %}<div><a href="/techsupport/download?path={{ b.commands_log|urlencode }}">commands log</a></div>{% endif %}
+                        </td></tr>
                     {% endfor %}
                 </table>
             </div>
@@ -1667,18 +1675,28 @@
                 return "Working…";
             }
 
+            function downloadLink(path, label) {
+                if (!path) return "";
+                return "<div><a href=\"/techsupport/download?path=" + encodeURIComponent(path) + "\">" +
+                    escapeHtml(label) + "</a></div>";
+            }
+
             function renderBundles(bundles) {
                 if (!bundles || !bundles.length) return "<p class=\"hint\">No bundles reported.</p>";
-                let rows = "<tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th></tr>";
+                let rows = "<tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th><th>Download</th></tr>";
                 bundles.forEach(b => {
                     const pathCell = (b.chunks && b.chunks.length)
                         ? "Split into " + b.chunks.length + " parts (over 1.5GB):" +
                           b.chunks.map(c => "<div>" + escapeHtml(c) + "</div>").join("")
                         : escapeHtml(b.path || "—");
+                    const downloadCell = (b.chunks && b.chunks.length)
+                        ? b.chunks.map((c, i) => downloadLink(c, "part " + (i + 1))).join("")
+                        : (downloadLink(b.path, "bundle") || "—");
                     rows += "<tr><td>" + escapeHtml((b.plugins || []).join(", ")) + "</td><td>" +
                         escapeHtml((b.hosts || []).join(", ") || "—") + "</td><td>" + escapeHtml(b.target) + "</td><td>" +
                         (b.ok ? "ok" : "failed") + "</td><td>" + pathCell + "</td>" +
-                        "<td>" + escapeHtml(b.size || "—") + "</td><td>" + escapeHtml(b.commands_log || "—") + "</td></tr>";
+                        "<td>" + escapeHtml(b.size || "—") + "</td><td>" + escapeHtml(b.commands_log || "—") + "</td>" +
+                        "<td>" + downloadCell + downloadLink(b.commands_log, "commands log") + "</td></tr>";
                 });
                 return "<table>" + rows + "</table>";
             }
