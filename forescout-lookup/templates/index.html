@@ -533,6 +533,8 @@
             {% else %}
             <h2>Tech-support bundle(s) — historical window</h2>
             {% endif %}
+            {% macro download_row(path, label) %}<div><a href="/techsupport/download?path={{ path|urlencode }}">{{ label }}</a>
+                <button type="button" class="btn-small btn-secondary" onclick='tsCleanup({{ path|tojson }}, this)'>Clean up</button></div>{% endmacro %}
             <div class="card">
                 <table>
                     <tr><th>Plugins</th><th>Hosts</th><th>Target</th><th>Result</th><th>Path</th><th>Size</th><th>Commands log</th><th>Download</th></tr>
@@ -542,11 +544,11 @@
                         <td>{{ b.size or '—' }}</td><td>{{ b.commands_log or '—' }}</td>
                         <td>
                             {% if b.chunks %}
-                                {% for c in b.chunks %}<div><a href="/techsupport/download?path={{ c|urlencode }}">part {{ loop.index }}</a></div>{% endfor %}
+                                {% for c in b.chunks %}{{ download_row(c, "part " ~ loop.index) }}{% endfor %}
                             {% elif b.path %}
-                                <a href="/techsupport/download?path={{ b.path|urlencode }}">bundle</a>
+                                {{ download_row(b.path, "bundle") }}
                             {% else %}—{% endif %}
-                            {% if b.commands_log %}<div><a href="/techsupport/download?path={{ b.commands_log|urlencode }}">commands log</a></div>{% endif %}
+                            {% if b.commands_log %}{{ download_row(b.commands_log, "commands log") }}{% endif %}
                         </td></tr>
                     {% endfor %}
                 </table>
@@ -1677,9 +1679,43 @@
 
             function downloadLink(path, label) {
                 if (!path) return "";
-                return "<div><a href=\"/techsupport/download?path=" + encodeURIComponent(path) + "\">" +
-                    escapeHtml(label) + "</a></div>";
+                return "<div>" +
+                    "<a href=\"/techsupport/download?path=" + encodeURIComponent(path) + "\">" + escapeHtml(label) + "</a>" +
+                    tsCleanupBtn(path) +
+                    "</div>";
             }
+
+            // Clean up button -- David's ask, 2026-08-27: delete a single
+            // built bundle/chunk/-commands.txt file off the EM's shared
+            // case storage right from the download list, once it's been
+            // retrieved (or is no longer needed) rather than piling up
+            // there indefinitely. `path` only ever contains characters
+            // BUNDLE_PATH_RE already restricts it to server-side (plain
+            // alnum/dot/dash/underscore/slash) -- safe to embed directly
+            // in a single-quoted onclick attribute alongside JSON.stringify's
+            // own double-quoted output, no escaping collision possible.
+            function tsCleanupBtn(path) {
+                if (!path) return "";
+                return " <button type=\"button\" class=\"btn-small btn-secondary\" onclick='tsCleanup(" +
+                    JSON.stringify(path) + ", this)'>Clean up</button>";
+            }
+
+            // Global (not just IIFE-local) -- the server-rendered bundle
+            // table (historical-window results, outside this closure)
+            // needs to reach this from its own plain inline onclick too.
+            window.tsCleanup = function (path, btn) {
+                if (!window.confirm("Delete this file off the EM? This cannot be undone.")) return;
+                btn.disabled = true;
+                btn.textContent = "Cleaning up…";
+                fetch("/techsupport/cleanup", { method: "POST", body: new URLSearchParams({ path }) })
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) { window.alert("Failed to clean up: " + d.error); btn.disabled = false; btn.textContent = "Clean up"; return; }
+                        const wrap = btn.closest("div");
+                        if (wrap) wrap.innerHTML = "<span class=\"muted\">deleted</span>";
+                    })
+                    .catch(err => { window.alert("Failed to clean up: " + err); btn.disabled = false; btn.textContent = "Clean up"; });
+            };
 
             function renderBundles(bundles) {
                 if (!bundles || !bundles.length) return "<p class=\"hint\">No bundles reported.</p>";

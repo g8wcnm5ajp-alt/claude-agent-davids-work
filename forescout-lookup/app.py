@@ -24,9 +24,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from forescout_client import (
     CASE_REF_RE, COMPANY_NAME_RE, LEVEL_RE, ForescoutClientError, arp_list, build_techsupport_em,
     build_techsupport_window_appliance, clear_techsupport_log, collect_techsupport, debug_set_appliance,
-    download_techsupport_bundle, last_checked, list_appliances, lookup, matched_rules, policy_history,
-    policy_tree, preview_techsupport, preview_techsupport_em, raw_fields, run_show_errors,
-    tail_techsupport_log, trace_defaults, trace_list, trace_set,
+    delete_techsupport_bundle, download_techsupport_bundle, last_checked, list_appliances, lookup,
+    matched_rules, policy_history, policy_tree, preview_techsupport, preview_techsupport_em, raw_fields,
+    run_show_errors, tail_techsupport_log, trace_defaults, trace_list, trace_set,
 )
 
 app = Flask(__name__)
@@ -1683,6 +1683,25 @@ def techsupport_download_route():
         mimetype="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.route("/techsupport/cleanup", methods=["POST"])
+def techsupport_cleanup_route():
+    """
+    Deletes a single built bundle/chunk/-commands.txt file off the EM's
+    shared case storage -- David's ask, 2026-08-27: a Clean up button
+    right next to each Download link. Same path-whitelist reasoning as
+    the download route; no CSRF here, matching /admin/clear_log/<section>
+    (the app's existing precedent for a destructive-but-narrow, already
+    login-gated action).
+    """
+    path = request.form.get("path", "")
+    try:
+        delete_techsupport_bundle(path)
+    except ForescoutClientError as e:
+        return jsonify({"error": str(e)}), 400
+    _log_activity("techsupport_bundle_cleanup", username=session.get("username"), path=path)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------

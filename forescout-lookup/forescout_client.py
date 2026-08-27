@@ -495,6 +495,16 @@ def download_techsupport_bundle(path, timeout=600):
     return proc
 
 
+def delete_techsupport_bundle(path, timeout=30):
+    """Deletes a single bundle/chunk/-commands.txt file off the EM's shared case storage -- David's ask,
+    2026-08-27: a Clean up button right next to each Download link. Same path whitelist as
+    download_techsupport_bundle -- checked here before ever spending an SSH round-trip, and the EM side
+    re-validates independently regardless."""
+    if not BUNDLE_PATH_RE.match(path or ""):
+        raise ForescoutClientError(f"'{path}' is not a recognized tech-support bundle path.")
+    return _run_verb(f"techsupportcleanup {path}", timeout=timeout)
+
+
 DURATION_RE = re.compile(r"^\d{1,4}[mh]$")
 
 

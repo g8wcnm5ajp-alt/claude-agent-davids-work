@@ -1651,6 +1651,26 @@ def do_techsupport_download(path):
     sys.stdout.buffer.flush()
 
 
+def do_techsupport_cleanup(path):
+    """
+    Deletes a single centralized bundle/chunk/-commands.txt file --
+    David's ask, 2026-08-27: a Clean up button right next to each
+    Download link, so a bundle already retrieved (or no longer needed)
+    doesn't have to be rm'd off the EM by hand. Same path whitelist as
+    do_techsupport_download -- this is a delete primitive, so it gets at
+    least as much scrutiny, not less. Deleting an already-gone file is
+    reported ok (matches the button's own "already cleaned up" case
+    rather than surfacing a confusing error for something that's already
+    achieved the user's actual intent).
+    """
+    if not _is_safe_bundle_path(path):
+        print(json.dumps({"error": f"'{path}' is not a known tech-support bundle path."}))
+        return
+    if os.path.isfile(path):
+        os.remove(path)
+    print(json.dumps({"ok": True}))
+
+
 def _case_dir_name(case_ref):
     """Timestamped fallback when no case reference was given, so ad-hoc builds still land somewhere distinct
     rather than colliding in one shared "adhoc" folder."""
@@ -2922,6 +2942,13 @@ def main():
     if m:
         return do_techsupport_download(m.group(1))
 
+    m = re.fullmatch(
+        r"techsupportcleanup (/shared/shared/case/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)",
+        original.strip(),
+    )
+    if m:
+        return do_techsupport_cleanup(m.group(1))
+
     # Trailing case-reference token is always present -- "-" means none,
     # since making it a genuinely optional trailing group made the two
     # verbs' patterns ambiguous to match unambiguously against a plain
@@ -3017,6 +3044,7 @@ def main():
         "techsupportempreview <N>m|h <company> <send> <case_ref> | techsupportem <N>m|h <company> <send> <case_ref> | "
         "techsupportlogtail | techsupportlogclear | "
         "techsupportdownload </shared/shared/case/.../.../...> | "
+        "techsupportcleanup </shared/shared/case/.../.../...> | "
         "policytree | "
         "lastchecked <ip> | matched <ip> <N>h|d|w | history <ip> <N>h|d|w | rawfields <ip> | "
         "arplist <ip> | appliances | runshowerrors <target> <N>m|h)",
