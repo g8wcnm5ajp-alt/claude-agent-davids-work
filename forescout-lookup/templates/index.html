@@ -192,6 +192,13 @@
                 {% endif %}
 
                 <div class="card">
+                    <h3>Host Details</h3>
+                    <button type="button" id="hostdetails-btn-{{ slug }}">Load Host Details</button>
+                    <p class="hint">A categorized summary (Classification, General, User, Network Access, Classification Details, More) built from the same raw field data as the Raw fields table further down -- only shows fields this app actually recognizes.</p>
+                    <div id="hostdetails-body-{{ slug }}"></div>
+                </div>
+
+                <div class="card">
                     <h3>Policy match history <span class="muted">(fleet-health noise filtered out)</span></h3>
                     <p class="hint">Current connection since: <strong>{{ result.connection_since or 'unknown' }}</strong> — rows from an earlier connection (e.g. a prior wired session before the host moved to its current medium) are dimmed and marked <span class="conn-badge conn-prior">prior</span>.</p>
                     <div class="tree-filter-row">
@@ -509,7 +516,7 @@
 
             <button type="button" id="techsupport-em-build-btn">Review commands…</button>
             <p class="hint">Bundles are built and reported, not auto-downloaded -- retrieve them from
-                <code>/shared/shared/case/&lt;case reference&gt;/192.168.22.210/</code> on the EM. Each bundle also gets
+                <code>/shared/shared/case/&lt;case reference&gt;/&lt;this EM's IP&gt;/</code> on the EM. Each bundle also gets
                 a "-commands.txt" file written right next to it.</p>
 
             <div id="techsupport-em-jobs"></div>
@@ -1212,6 +1219,159 @@
 
             search.addEventListener("input", render);
             mode.addEventListener("change", render);
+        })();
+
+        // Host Details window -- David's ask, 2026-08-27: a categorized,
+        // human-labeled summary matching the Forescout console's own
+        // host-detail layout (Classification / General / User / Network
+        // Access / Classification Details / More), built on top of the
+        // exact same /api/rawfields/<ip> data as the Raw fields table
+        // above (separate fetch, since this can be opened without ever
+        // loading the raw table). FIELD_MAP below was built by cross-
+        // checking real field names/values against a real console
+        // screenshot -- only fields confirmed that way are mapped; an
+        // unmapped field is left out rather than guessed at, so nothing
+        // shown here is fabricated.
+        (function () {
+            const ip = "{{ result.ip }}";
+            const btn = document.getElementById("hostdetails-btn-{{ slug }}");
+            const body = document.getElementById("hostdetails-body-{{ slug }}");
+            if (!btn) return;
+
+            function escapeHtml(s) {
+                return (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            const YES_NO = v => (v === "true" ? "Yes" : v === "false" ? "No" : v);
+            const SOURCE_LABEL = v => (v === "dpl" ? "Device Profile Library" : v);
+            const LAST_SEGMENT = v => (v && v.includes("/") ? v.split("/").pop() : v);
+
+            // field name -> { cat, label, transform } -- transform is optional,
+            // applied to each raw value before display.
+            const FIELD_MAP = {
+                prim_classification: { cat: "Classification", label: "Function", transform: LAST_SEGMENT },
+                dpl_os_classification: { cat: "Classification", label: "Operating System", transform: LAST_SEGMENT },
+                vendor_classification: { cat: "Classification", label: "Vendor and Model" },
+                manufacturer_classification: { cat: "Classification", label: "Class Vendor" },
+
+                goodies_label_list: { cat: "General", label: "Assigned Label" },
+                linux_manage: { cat: "General", label: "Linux Manageable (SecureConnector)", transform: YES_NO },
+                ssh_linux_manage: { cat: "General", label: "Linux Manageable (SSH Direct Access)", transform: YES_NO },
+                mac: { cat: "General", label: "MAC Address" },
+                mac_vendor_string: { cat: "General", label: "NIC Vendor" },
+                agent_install_mode: { cat: "General", label: "Windows SecureConnector Deployment Type" },
+                agent_visible_mode: { cat: "General", label: "Windows SecureConnector Systray Display" },
+                agent_version: { cat: "General", label: "Windows SecureConnector Version" },
+                manage_domain_strict: { cat: "General", label: "Windows Manageable Domain (Current)", transform: YES_NO },
+                manage_agent: { cat: "General", label: "Windows Manageable SecureConnector", transform: YES_NO },
+
+                is_logged_in: { cat: "User", label: "Logged In Status" },
+
+                sw_port_multi: { cat: "Network Access", label: "Number of Hosts on Port" },
+                sw_ip: { cat: "Network Access", label: "Switch IP/FQDN" },
+                sw_ipport_desc: { cat: "Network Access", label: "Switch IP/FQDN and Port Name" },
+                sw_location: { cat: "Network Access", label: "Switch Location" },
+                sw_port_acl: { cat: "Network Access", label: "Switch Port ACL" },
+                sw_port_action: { cat: "Network Access", label: "Switch Port Action" },
+                sw_port_alias: { cat: "Network Access", label: "Switch Port Alias" },
+                sw_port_configurations: { cat: "Network Access", label: "Switch Port Configurations" },
+                sw_port_connected: { cat: "Network Access", label: "Switch Port Connect", transform: v => (v === "disconnected" ? "Disconnected" : v === "connected" ? "Connected" : v) },
+                sw_port_desc: { cat: "Network Access", label: "Switch Port Name" },
+                sw_port_poe_desc: { cat: "Network Access", label: "Switch Port PoE Connected Device" },
+                sw_port_poe_power: { cat: "Network Access", label: "Switch Port PoE Power Consumption" },
+                sw_port_vlan: { cat: "Network Access", label: "Switch Port VLAN" },
+                sw_port_vlan_name: { cat: "Network Access", label: "Switch Port VLAN Name" },
+                sw_port_voice_device: { cat: "Network Access", label: "Switch Port Voice Device", transform: YES_NO },
+                sw_vendor: { cat: "Network Access", label: "Switch Vendor" },
+                sw_voip_port: { cat: "Network Access", label: "Switch VoIP Port" , transform: YES_NO },
+                wifi_client_status: { cat: "Network Access", label: "WLAN Client Connectivity Status" },
+
+                prim_classification_source: { cat: "Classification Details", label: "Function Classification Source", transform: SOURCE_LABEL },
+                os_classification_source: { cat: "Classification Details", label: "Operating System Classification Source", transform: SOURCE_LABEL },
+                manufacturer_classification_source: { cat: "Classification Details", label: "Class Vendor Classification Source", transform: SOURCE_LABEL },
+                dpl_model_classification: { cat: "Classification Details", label: "DPL Model" },
+                matched_fingerprints: { cat: "Classification Details", label: "Matched Classification Profiles" },
+
+                sw_hostname: { cat: "More", label: "Switch Hostname" },
+                sw_os: { cat: "More", label: "Switch OS" },
+            };
+            // DPL Function / DPL Operating System / DPL Vendor and Model reuse
+            // the same underlying fields as their Classification-section
+            // counterparts (that's genuinely the same data Forescout's own
+            // console shows twice), so they're added as extra entries below
+            // rather than duplicate map keys.
+            const EXTRA_DPL_ROWS = [
+                { field: "prim_classification", cat: "Classification Details", label: "DPL Function", transform: LAST_SEGMENT },
+                { field: "dpl_os_classification", cat: "Classification Details", label: "DPL Operating System", transform: LAST_SEGMENT },
+                { field: "vendor_classification", cat: "Classification Details", label: "DPL Vendor and Model" },
+            ];
+
+            const CATEGORY_ORDER = ["Classification", "General", "User", "Network Access", "Classification Details", "More"];
+
+            function render(fields) {
+                // group raw entries by field name -- some fields (e.g.
+                // sw_port_configurations, matched_fingerprints) legitimately
+                // repeat with different values, same as the console's own
+                // multi-line display for those rows.
+                const byField = {};
+                fields.forEach(f => {
+                    if (f.value === "???") return;
+                    (byField[f.field] = byField[f.field] || []).push(f.value);
+                });
+
+                const rows = [];
+                Object.keys(FIELD_MAP).forEach(fieldName => {
+                    const values = byField[fieldName];
+                    if (!values) return;
+                    const m = FIELD_MAP[fieldName];
+                    const shown = m.transform ? values.map(m.transform) : values;
+                    rows.push({ cat: m.cat, label: m.label, values: shown });
+                });
+                EXTRA_DPL_ROWS.forEach(r => {
+                    const values = byField[r.field];
+                    if (!values) return;
+                    const shown = r.transform ? values.map(r.transform) : values;
+                    rows.push({ cat: r.cat, label: r.label, values: shown });
+                });
+
+                if (!rows.length) {
+                    body.innerHTML = "<p class=\"hint\">No recognized fields for this host yet -- try Load raw fields below instead.</p>";
+                    return;
+                }
+
+                let html = "";
+                CATEGORY_ORDER.forEach(cat => {
+                    const catRows = rows.filter(r => r.cat === cat);
+                    if (!catRows.length) return;
+                    html += "<h4 class=\"hostdetails-cat\">" + escapeHtml(cat) + "</h4><table class=\"hostdetails-table\">";
+                    catRows.forEach(r => {
+                        const valueHtml = r.values.length > 1
+                            ? "<ul class=\"hostdetails-multi\">" + r.values.map(v => "<li>" + escapeHtml(v) + "</li>").join("") + "</ul>"
+                            : escapeHtml(r.values[0]);
+                        html += "<tr><th>" + escapeHtml(r.label) + "</th><td>" + valueHtml + "</td></tr>";
+                    });
+                    html += "</table>";
+                });
+                body.innerHTML = html;
+            }
+
+            btn.addEventListener("click", () => {
+                btn.disabled = true;
+                btn.textContent = "Loading…";
+                body.innerHTML = "<p class=\"hint\">Loading…</p>";
+                fetch("/api/rawfields/" + ip)
+                    .then(r => r.json())
+                    .then(d => {
+                        btn.style.display = "none";
+                        if (d.error) { body.innerHTML = "<p class=\"error\">" + escapeHtml(d.error) + "</p>"; return; }
+                        render(d.fields || []);
+                    })
+                    .catch(err => {
+                        body.innerHTML = "<p class=\"error\">failed to load: " + escapeHtml(String(err)) + "</p>";
+                        btn.disabled = false;
+                        btn.textContent = "Load Host Details";
+                    });
+            });
         })();
         </script>
     {% endfor %}
