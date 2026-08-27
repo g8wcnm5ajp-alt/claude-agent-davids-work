@@ -1648,6 +1648,26 @@ def api_techsupport_run_kill(run_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/techsupport_run/<run_id>/delete", methods=["POST"])
+def api_techsupport_run_delete(run_id):
+    """Terminates and removes a tracked Review->Proceed job outright -- David's ask, 2026-08-27: "add a
+    delete job, ie. term each review proceed session as a job." Distinct from /kill just above (which
+    only flips a stuck "running" row to "failed" so the UI can unstick, keeping the record for history)
+    and from /admin/clear_log/techsupport_runs (which wipes every tracked run at once) -- this drops ONE
+    run's row entirely, regardless of its current status. A still-"running" row is no more reachable from
+    here than /kill can reach it -- deleting just discards the tracked row; whatever SSH call is still in
+    flight on the EM runs to completion or failure on its own, same honest limitation as /kill."""
+    run = get_ts_run(run_id)
+    if run is None:
+        return jsonify({"error": "unknown run id"}), 404
+    with _ts_runs_lock:
+        runs = _load_ts_runs()
+        runs = [r for r in runs if r["id"] != run_id]
+        _save_ts_runs(runs)
+    _log_activity("techsupport_run_delete", username=session.get("username"), run_id=run_id)
+    return jsonify({"ok": True})
+
+
 @app.route("/techsupport/download", methods=["GET"])
 def techsupport_download_route():
     """

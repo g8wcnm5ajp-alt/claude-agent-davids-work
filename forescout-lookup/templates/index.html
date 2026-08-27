@@ -1869,6 +1869,29 @@
                 // does NOT reach into the background thread or abort whatever SSH call is still in flight on
                 // the EM, since there's no way to from here. Good enough for what David actually needs (get
                 // unstuck, try again), not a claim that the remote command itself was cancelled.
+                // Delete job -- David's ask, 2026-08-27: "add a delete job, ie. term each review proceed
+                // session as a job." Distinct from Kill above (which only unsticks a "running" row by
+                // flipping it to "failed", keeping the record) -- Delete drops the tracked run entirely and
+                // removes its card, and is offered regardless of status (running/failed/complete), matching
+                // the /api/techsupport_run/<id>/delete route's own scope.
+                function wireDeleteBtn(el, run) {
+                    const delBtn = el.querySelector(".techsupport-delete-btn");
+                    if (!delBtn) return;
+                    delBtn.addEventListener("click", () => {
+                        if (!window.confirm("Delete this job? This removes it from the list -- it does not touch any bundle files already built.")) return;
+                        delBtn.disabled = true;
+                        delBtn.textContent = "Deleting…";
+                        fetch("/api/techsupport_run/" + run.run_id + "/delete", { method: "POST" })
+                            .then(r => r.json())
+                            .then(d4 => {
+                                if (d4.error) { window.alert("Failed to delete: " + d4.error); delBtn.disabled = false; delBtn.textContent = "Delete"; return; }
+                                tsLogJobDone(run.run_id);
+                                el.remove();
+                            })
+                            .catch(err => { window.alert("Failed to delete: " + err); delBtn.disabled = false; delBtn.textContent = "Delete"; });
+                    });
+                }
+
                 function pollJob(run) {
                     fetch("/api/techsupport_run/" + run.run_id)
                         .then(r => r.json())
@@ -1878,7 +1901,8 @@
                             if (d.status === "running") {
                                 el.innerHTML = "<p class=\"hint\"><span class=\"spinner\"></span>" +
                                     escapeHtml(run.key) + " -- " + phaseLabel(d.phase) + " " +
-                                    "<button type=\"button\" class=\"btn-small btn-secondary techsupport-kill-btn\">Kill</button></p>";
+                                    "<button type=\"button\" class=\"btn-small btn-secondary techsupport-kill-btn\">Kill</button> " +
+                                    "<button type=\"button\" class=\"btn-small btn-secondary techsupport-delete-btn\">Delete</button></p>";
                                 const killBtn = el.querySelector(".techsupport-kill-btn");
                                 if (killBtn) {
                                     killBtn.addEventListener("click", () => {
@@ -1893,19 +1917,24 @@
                                             .catch(err => { window.alert("Failed to kill: " + err); killBtn.disabled = false; killBtn.textContent = "Kill"; });
                                     });
                                 }
+                                wireDeleteBtn(el, run);
                                 setTimeout(() => pollJob(run), 5000);
                                 return;
                             }
                             if (d.status === "failed") {
                                 el.innerHTML = "<h4>" + escapeHtml(run.key) + "</h4><div class=\"error\">" +
-                                    escapeHtml(d.error || "failed") + "</div>";
+                                    escapeHtml(d.error || "failed") + "</div>" +
+                                    "<p><button type=\"button\" class=\"btn-small btn-secondary techsupport-delete-btn\">Delete</button></p>";
+                                wireDeleteBtn(el, run);
                                 tsLogJobDone(run.run_id);
                                 return;
                             }
                             const result = d.result || {};
                             el.innerHTML = "<h4>" + escapeHtml(run.key) +
                                 (d.case_ref ? " — " + escapeHtml(d.case_ref) : "") + "</h4>" +
-                                renderBundles(result.bundles);
+                                renderBundles(result.bundles) +
+                                "<p><button type=\"button\" class=\"btn-small btn-secondary techsupport-delete-btn\">Delete</button></p>";
+                            wireDeleteBtn(el, run);
                             tsLogJobDone(run.run_id);
                         })
                         .catch(() => setTimeout(() => pollJob(run), 5000));
