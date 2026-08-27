@@ -180,39 +180,71 @@ original to `etc/keys/node.bak2` first) and traced exactly what it does:
   `keytool -list`, which showed a `PrivateKeyEntry` aliased `fsnet` (the
   node's real identity) among 109 trust entries.
 
-**CURRENT LIVE EM STATE (as of end of this session) -- needs a decision
-before doing anything else with this lab:**
+**RESOLVED -- rolled back, EM is fully healthy again.** What happened,
+for anyone picking this back up:
 
 `etc/keys/node.bak2` = original keystore (untouched backup).
 `etc/keys/node` = freshly regenerated keystore (new self-signed keypair,
-alias `fsnet`). **`fstool service restart` WAS run** -- the EM is fully
-up (`fstool service status` reports "Enterprise Manager is running"),
-but its new self-signed identity isn't CA-signed, so **all appliances are
-currently disconnected**: `.212`, `.213`, the REM `.210`, and two others
-(`172.16.1.129`/`.130`). Confirmed via `.212`'s own trace log:
+alias `fsnet`). **`fstool service restart` WAS run** -- the EM came up
+fine, but its new self-signed identity isn't CA-signed, so **all
+appliances disconnected**: `.212`, `.213`, the REM `.210` (two other,
+already-offline-before-any-of-this hosts, `172.16.1.129`/`.130`,
+unaffected either way). Confirmed via `.212`'s own trace log:
 `java.security.cert.CertificateException: Signature not verified` --
 exactly what you'd expect from a self-signed cert nothing else trusts.
 
-`fstool certool` is the real tool for the internal CA (`lsca`, `lsend`,
-`csr`, etc. -- see `fstool help -a` / `fstool certool` for the full list)
-and the newly-generated end-entity cert is sitting right there with its
-own CSR (`etc/cert/endentity/store/<uuid>/cert.csr.txt`), but the exact
-`certool` sequence to get that CSR properly signed by the internal CA and
-pushed to both appliances wasn't found/attempted -- no documentation for
-it was available in-session, and guessing at commands on a live 3-node
-lab that's already mid-outage was judged too risky to do blind.
+Tried to properly re-establish trust rather than just roll back
+straight away. `fstool certool` is the real tool for the internal CA
+(`lsca`, `lsend`, `csr`, etc. -- see `fstool certool` with no args for
+the full list) and the newly-generated end-entity cert had its own CSR
+sitting right there (`etc/cert/endentity/store/<uuid>/cert.csr.txt`), but
+no CA-signing subcommand was found in that list at all (no `sign`,
+nothing obviously it) -- and `etc/cert/ca/` (7 trusted CA `.pem` files on
+this EM) holds **no private key**, so this EM can't self-sign into that
+chain either.
 
-**Two ways to resume from here, not yet decided:**
-  - **Roll back** (simplest, known-safe): `mv etc/keys/node.bak2
-    etc/keys/node` then `fstool service restart` again -- returns to
-    exactly the original working state, all appliances reconnect. We keep
-    everything learned (the derivation method, the XML/DB findings)
-    regardless.
-  - **Finish the CA-signing repair**: investigate `fstool certool csr`
-    and the `lsca`/`lsend` structure properly (Forescout support docs, or
-    trial on a truly disposable node first) to get the new `fsnet` cert
-    signed by the trusted CA and pushed to `.212`/`.213`/`.210`, restoring
-    connectivity *with* the new identity in place.
+Went looking for how trust actually works instead of guessing further:
+`.212`'s own `etc/cert/endentity/store/` had a cert with
+`CN=farncarem.yubique.com`, issued by David's real internal CA
+(`Intermediate.yubique.com`) -- the exact same cert this session found
+much earlier serving Apache on port 443. That looked like the answer
+(the appliance already trusts *that* specific cert, and David has a
+matching key on his own machine, `ca/intermediate/server/private/
+farncarem.Yubique.com.key.pem` (its passphrase is not recorded here --
+see CLAUDE.md's no-secrets-in-docs rule -- but it's the same one already
+in use for this app's own HTTPS cert; confirmed openable with
+`openssl rsa -check`). **But it wasn't**: its SHA-256 fingerprint
+didn't match `.212`'s stored copy, and -- the real surprise -- restoring
+the *original* `node.bak2` and checking its own `fsnet` entry's
+fingerprint didn't match `.212`'s stored trust entries either, even
+though that original keystore is what was genuinely working minutes
+earlier. So the mutual-TLS trust CCU actually validates against for
+port 13000 is not simply "does the peer's JKS `node`-keystore identity
+match one of my stored `endentity` certs" -- there's a layer here still
+not understood (possibly it's the CRL/chain-validation path via `lsca`
+rather than a direct fingerprint match, possibly something else
+entirely). **Flagged and left unsolved rather than guessed at further.**
+
+**What actually fixed it**: plain rollback.
+`mv etc/keys/node etc/keys/node.selfsigned-2026-08-27` (kept, not
+deleted, in case it's useful later) then `mv etc/keys/node.bak2
+etc/keys/node`, then `fstool service restart`. Took about 3 minutes to
+fully settle; confirmed via `fstool service status` polling --
+`.212`/`.213` back under "Connected Forescout Appliances", REM `.210`
+"connected". Cross-checked with a real `lookup` call through the actual
+forescout-lookup app afterward -- full, correct data back for `.212`,
+`all_targets` correctly listing `.210`/`.212`/`.213`. EM is exactly back
+to its pre-session state; nothing left broken.
+
+**If this gets picked up again**, the productive next step is almost
+certainly still the DevTools HTTP capture from section "Recommended next
+step" below -- not more `certool`/keystore spelunking. The one new lead
+worth keeping in mind: whatever CCU validates a peer's cert against for
+port 13000 evidently isn't a simple stored-fingerprint match, so if
+that mechanism ever needs to be understood properly, it likely means
+finding CCU's own logging/config for *how* it invokes certificate
+validation (not just the trust material itself), or asking Forescout
+support directly rather than reverse-engineering it blind on a live lab.
 
 ### 7. Console-side password derivation -- blocked on environment bootstrap, not attempted further
 

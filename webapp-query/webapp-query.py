@@ -1763,6 +1763,18 @@ def _centralize_bundle(plugin_target, path, commands_log, case_ref, case_dir=Non
     return new_path, new_commands_log, commands
 
 
+# David's ask, 2026-08-27: was hardcoded at 480s, independent of whatever
+# timeout app.py's own collect_techsupport/build_techsupport_em callers
+# used -- confirmed live on a still-settling appliance (fresh off a
+# disconnect/reconnect) that `fstool tech-support` can genuinely run well
+# past 8 minutes and still succeed; when it did, the bundle it produced
+# was orphaned in /tmp on that box forever, since this SSH call had
+# already given up and moved on. app.py's own outer SSH-response timeout
+# is 3600s (see collect_techsupport/build_techsupport_em call sites) --
+# staying comfortably under that (rather than matching it exactly) still
+# leaves headroom for centralizing + splitting afterward.
+TECH_SUPPORT_BUILD_TIMEOUT = 3300  # 55 minutes
+
 SPLIT_THRESHOLD_BYTES = int(1.5 * 1024 * 1024 * 1024)  # 1.5GB
 SPLIT_CHUNK_SIZE = "500M"
 
@@ -1901,9 +1913,9 @@ def _build_combined_bundle(
     )
     _log_ts(log_tag, f"[{plugin_target}] {ts_cmd}")
     if plugin_target == EM_IP:
-        out, err, rc = run(["bash", "-c", ts_cmd], timeout=480)
+        out, err, rc = run(["bash", "-c", ts_cmd], timeout=TECH_SUPPORT_BUILD_TIMEOUT)
     else:
-        out, err, rc = ssh_appliance(plugin_target, ts_cmd, timeout=480)
+        out, err, rc = ssh_appliance(plugin_target, ts_cmd, timeout=TECH_SUPPORT_BUILD_TIMEOUT)
     text = out + err
     finished_display = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     m = re.search(r"File:\s*(\S+)", text)
