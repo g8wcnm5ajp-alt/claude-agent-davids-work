@@ -65,6 +65,39 @@ ever turned on.
 
 ---
 
+## 2026-08-28 -- Policy tree Current View / Graphic View always show "No matched, enabled policies" (not a UI bug -- a tree-scope gap)
+
+**Symptom**: David reported both views under a host's Policy tree card appear broken.
+
+**Investigated live** with Playwright driving the actual deployed app (real login, real lookup, both
+tabs clicked): zero JS console errors, both `.tree-view-tab-btn`s switch correctly, the Graphic view's
+SVG renders cleanly (confirmed 2712 nodes drawn with the "show only matched" filter unchecked). So the
+rendering code itself is fine.
+
+**Root cause**: `build_policy_tree()` (`webapp-query.py`) intentionally scopes the tree to only the
+`NINHS` top-level folder in `nptree.xml` -- its own comment says the other ~651 rules are "a dormant
+template pack under different top-level folders, not worth shipping to every page load." That
+assumption no longer holds: found a `Test-Polices` folder (with a `Test-SNOW` sub-folder) containing
+rules that are **actively matching real hosts right now** -- confirmed via fresh `eval_status` rows on
+both `.212` and `.213` (timestamps as recent as today 06:29), whose `rule_id`s exist in `nprules.xml`/
+`nptree.xml` but sit outside `NINHS`, so `_parse_policy_folder`'s NINHS-only walk never includes them.
+
+Since `/api/matched/<ip>` pulls from Postgres `np_action`/`eval_status` with no folder-scope
+restriction, but `/api/policytree` only ever contains the NINHS subtree, any host whose recent matches
+land in `Test-Polices` (which was most of what I sampled) shows a real match ID that then can't be
+found anywhere in the tree the UI actually draws from -- both views correctly render "No matched,
+enabled policies found for this host", which is silently wrong rather than broken outright. Verified
+this isn't a stale cache: grepped `nprules.xml`/`nptree.xml` directly on the EM, bypassing the app's
+own `policy_tree_cache.json`.
+
+**Not yet fixed** -- David's call, 2026-08-28: report only for now, no code change. Options on the
+table for later: (a) widen `build_policy_tree()` to include every top-level folder, not just NINHS
+(simplest, but the tree grows well past 2712 nodes), or (b) keep NINHS-only but have the UI surface
+"N matched rule(s) exist outside the displayed tree" instead of a bare "no matches" when
+`/api/matched` returns IDs the tree doesn't contain.
+
+---
+
 ## Reference: observed MAC/ARP read cadence by switch (90-min sample, 2026-08-27 13:47-15:20)
 
 | Appliance | Switch IP | Type | Poll style | MAC-table cadence | ARP cadence |
