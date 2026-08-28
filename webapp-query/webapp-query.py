@@ -212,6 +212,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -282,6 +283,63 @@ def run(cmd, timeout=60, input=None):
         return "", f"timed out after {timeout}s", 1
 
 
+_APPLIANCE_HOST_RE = re.compile(rf"^{IP_RE}$")
+_dns_server_cache = None
+
+
+def _get_fstool_dns_servers():
+    """
+    The DNS server(s) Forescout itself is configured to use for resolving appliance/EM
+    hostnames (`fstool dns -l`) -- David's ask, 2026-08-28: a customer whose appliances/EM
+    are addressed by DNS name (not IP, unlike every environment this app has been tested
+    against so far) reported the app failing to reach appliances entirely. Confirmed live on
+    this lab EM that the box's own OS-level resolver (/etc/resolv.conf, a local 127.0.0.1
+    stub here) is a *different* thing from what `fstool dns -l` reports -- Forescout's own
+    engine resolving appliance names correctly is no guarantee a plain `ssh`/`scp` subprocess
+    (which uses the OS resolver) will too. Cached for this process's lifetime -- fstool's own
+    DNS config doesn't change mid-request. Never raises: any failure here just means no
+    fstool-sourced servers were found, and _resolve_target_host falls back further.
+    """
+    global _dns_server_cache
+    if _dns_server_cache is not None:
+        return _dns_server_cache
+    try:
+        out, err, rc = run(["fstool", "dns", "-l"], timeout=10)
+        _dns_server_cache = re.findall(rf"^({IP_RE})$", out, re.M)
+    except Exception:
+        _dns_server_cache = []
+    return _dns_server_cache
+
+
+def _resolve_target_host(host):
+    """
+    Returns host unchanged if it's already a literal IPv4 address -- the case in every
+    environment this app has run in so far, zero behavior change. Otherwise resolves it as a
+    hostname: first against the DNS server(s) fstool itself is configured to use (see
+    _get_fstool_dns_servers -- the authoritative source for how Forescout resolves its own
+    managed appliances/EM), falling back to this box's plain OS-level resolver only if that
+    doesn't produce an answer. Returns the original host unchanged (letting the actual
+    ssh/scp call attempt its own resolution and fail with a clear error) if nothing here can
+    resolve it either -- never silently substitutes something wrong. `dig` may not exist on
+    every box this ever runs on, so that path is skipped (not fatal) if it's missing.
+    """
+    if _APPLIANCE_HOST_RE.match(host):
+        return host
+    if shutil.which("dig"):
+        for server in _get_fstool_dns_servers():
+            try:
+                out, err, rc = run(["dig", f"@{server}", "+short", "+time=3", "+tries=1", host], timeout=5)
+            except Exception:
+                continue
+            m = re.search(rf"^({IP_RE})$", out.strip(), re.M)
+            if m:
+                return m.group(1)
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        return host
+
+
 def ssh_appliance(appliance_ip, remote_cmd, timeout=60, input=None):
     """
     SSH from the EM to a managed appliance and run remote_cmd.
@@ -291,10 +349,17 @@ def ssh_appliance(appliance_ip, remote_cmd, timeout=60, input=None):
     key that gets a caller into this script in the first place. input,
     if given, is piped through this SSH process's own stdin, which SSH
     transparently forwards to the remote command's stdin -- see run().
+
+    appliance_ip may be a DNS name, not just a literal IP, in a customer
+    environment -- resolved via _resolve_target_host (fstool's own DNS
+    server first) before ssh ever sees it, rather than trusting ssh's own
+    OS-level resolution to agree with however Forescout itself resolves
+    the same name.
     """
+    resolved = _resolve_target_host(appliance_ip)
     cmd = [
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-        "-o", f"ConnectTimeout=10", f"root@{appliance_ip}", remote_cmd,
+        "-o", f"ConnectTimeout=10", f"root@{resolved}", remote_cmd,
     ]
     return run(cmd, timeout=timeout, input=input)
 
@@ -1802,9 +1867,10 @@ def _centralize_bundle(plugin_target, path, commands_log, case_ref, case_dir=Non
         for f in files:
             run(["bash", "-c", f'mv "{f}" "{dest_dir}/"'], timeout=30)
     else:
+        resolved_target = _resolve_target_host(plugin_target)
         for f in files:
             run(["scp", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                 "-o", "ConnectTimeout=10", f"root@{plugin_target}:{f}", f"{dest_dir}/"], timeout=60)
+                 "-o", "ConnectTimeout=10", f"root@{resolved_target}:{f}", f"{dest_dir}/"], timeout=60)
         ssh_appliance(plugin_target, "rm -f " + " ".join(f'"{f}"' for f in files), timeout=15)
 
     new_path = f"{dest_dir}/{os.path.basename(path)}"
