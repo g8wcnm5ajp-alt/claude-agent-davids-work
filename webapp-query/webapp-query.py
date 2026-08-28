@@ -417,9 +417,16 @@ def get_assigned_to(ip):
     m = re.search(r"assigned-to,\s*Enterprise Manager", text)
     if m:
         return "em", None
-    m = re.search(r"assigned-to,\s*(?:this\s*)?\(?IP:\s*([0-9.]+)", text)
+    # Was IP-only (r"...IP:\s*([0-9.]+)" / r"...,\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})") --
+    # same bug class as APPLIANCE_ONLINE_RE and ssh_appliance's own DNS-resolution fix
+    # (2026-08-28), but more fundamental: this is the very first step of nearly every
+    # lookup/history/matched/rawfields call, so on a DNS-named-appliance environment
+    # (confirmed live, HSC Belfast) this alone would return (None, None) -- "couldn't
+    # determine" -- for every single host, before ssh_appliance ever gets a chance to
+    # resolve anything. Now matches a hostname or an IP either way.
+    m = re.search(r"assigned-to,\s*(?:this\s*)?\(?IP:\s*([^\s),]+)", text)
     if not m:
-        m = re.search(r"assigned-to,\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
+        m = re.search(r"assigned-to,\s*([^\s,)]+)", text)
     if m:
         return "appliance", m.group(1)
     return None, None
