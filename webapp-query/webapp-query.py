@@ -3,7 +3,9 @@
 webapp-query.py -- SSH forced-command wrapper for the forescout-lookup
 web app's restricted key.
 
-Deployed on the EM (192.168.22.210) at /root/scripts/webapp-query/webapp-query.py.
+Deployed on the EM (currently 192.168.22.215 -- see EM_IP below, detected live via
+`hostname -I` rather than hardcoded, since this environment's EM has changed IP before)
+at /root/scripts/webapp-query/webapp-query.py.
 The corresponding authorized_keys line pins every connection using this
 key to run ONLY this script:
 
@@ -453,6 +455,22 @@ def get_field(fields, name):
     return None
 
 
+def _domain_managed_status(fields):
+    """"Domain managed" in the Identity panel -- prefers manage_domain_strict (the same live
+    "Windows Manageable Domain (Current)" check already shown separately under Host Details/General)
+    over part_of_domain, which can get stuck in an unresolved error state for a long time without a
+    fresh retry. Confirmed live, 2026-08-28, on 192.168.22.253: part_of_domain had been stuck on
+    '???' (status gen_error_service_restart:err) since 2026-07-30, while manage_domain_strict was
+    fresh (today) and agreed with a live `fstool va_test -h <ip> -c manage` check on the managing
+    appliance (smb/rpc/wmi all genuinely failing right now due to a hostname-resolution problem --
+    "no" was the actually-correct current answer, not merely a stale field). Falls back to
+    part_of_domain only if manage_domain_strict itself has no real value either."""
+    strict = get_field(fields, "manage_domain_strict")
+    if strict in ("true", "false"):
+        return tri_state(strict)
+    return tri_state(get_field(fields, "part_of_domain"))
+
+
 def get_field_source(fields, name):
     for f in fields:
         if f["field"] == name:
@@ -790,7 +808,7 @@ def do_lookup(ip):
 
     if mode == "em":
         raw, err, rc = run(["fstool", "hostinfo", ip], timeout=30)
-        source_box = "Enterprise Manager (192.168.22.210)"
+        source_box = f"Enterprise Manager ({EM_IP})"
     else:
         raw, err, rc = ssh_appliance(appliance, f"fstool hostinfo {ip}", timeout=30)
         source_box = appliance
@@ -869,14 +887,14 @@ def do_lookup(ip):
         "online": get_field(fields, "online"),
         "onsite": get_field(fields, "onsite"),
         "active": get_field(fields, "active"),
-        # manage_agent/part_of_domain are the real fields behind what the
+        # manage_agent/domain-managed are the real fields behind what the
         # Console's own host log shows as e.g. "{Fully Trusted} Secure
         # Connector Managed NOT Domain Managed" (policy NINHS 1.2.2.02
         # Windows Enterprise Manageability) -- confirmed against a real
         # Console export for this exact host before wiring this up,
         # rather than guessed from field names alone.
         "secureconnector_managed": tri_state(get_field(fields, "manage_agent")),
-        "domain_managed": tri_state(get_field(fields, "part_of_domain")),
+        "domain_managed": _domain_managed_status(fields),
         "arp_list": arp_list,
         "connection_since": format_epoch(connection_since),
         "policy_history": get_policy_history(ip, mode, appliance, connection_since=connection_since),
@@ -1205,7 +1223,21 @@ def run_debug_cmd(plugin, level, minutes, mode, appliance):
     return ssh_appliance(appliance, cmd, timeout=30)
 
 
-EM_IP = "192.168.22.210"
+def _detect_own_ip():
+    """This script always runs directly on the EM (see module docstring) -- asks the OS for its own
+    primary IP rather than hardcoding one. David's ask, 2026-08-28: the "Tech-Support pick
+    appliance/EM" list was showing 192.168.22.210 as the EM's address when the real, live EM is
+    192.168.22.215 -- this environment's EM has actually changed IP at least once already this
+    session (a deliberate role switch, .210 -> .215), so a hardcoded value silently goes stale the
+    next time that happens too. Same `hostname -I` approach Deploy.sh already uses for the same
+    purpose. Falls back to the old hardcoded value only if that command is ever unavailable, so this
+    can't hard-crash the whole script over a display/targeting detail."""
+    out, err, rc = run(["hostname", "-I"], timeout=5)
+    ip = out.strip().split()[0] if out.strip() else None
+    return ip or "192.168.22.210"
+
+
+EM_IP = _detect_own_ip()
 
 
 def resolve_target(target):
