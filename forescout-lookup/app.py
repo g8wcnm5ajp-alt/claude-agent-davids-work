@@ -918,6 +918,30 @@ def get_case_history(limit=20):
 # ---------------------------------------------------------------------
 ACTIVITY_LOG_PATH = os.path.join(DATA_DIR, "activity_log.jsonl")
 
+# Client-side JS diagnostic beacon -- David's ask, 2026-08-28: a Graphic View
+# bug (only the root "NINHS" box rendering) couldn't be reproduced live, so
+# the policy-tree JS beacons its own render-state/exception detail here
+# instead of relying on someone manually copying browser console output.
+# Never a substitute for real testing -- pulled back via SSH once David
+# reproduces it, then this route (and the JS calling it) gets removed again.
+CLIENT_DEBUG_LOG_PATH = os.path.join(DATA_DIR, "client_debug_log.jsonl")
+
+
+@app.route("/api/client_debug_log", methods=["POST"])
+def api_client_debug_log():
+    try:
+        payload = request.get_json(silent=True) or {}
+        entry = {
+            "logged_at": int(time.time()), "username": session.get("username"),
+            "remote_addr": request.remote_addr,
+            **payload,
+        }
+        with open(CLIENT_DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
 
 def _log_activity(action, **details):
     """Never lets a logging failure break the action it's describing -- best-effort only."""

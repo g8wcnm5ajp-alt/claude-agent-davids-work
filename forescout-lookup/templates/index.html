@@ -871,92 +871,128 @@
                 return out;
             }
 
+            // Debug-log helper -- David's ask, 2026-08-28: a Graphic View bug (only the root
+            // "NINHS" box rendering, despite the unfiltered tree/a nonzero matched count) couldn't
+            // be reproduced live, so this beacons diagnostic detail to the server (/data/
+            // client_debug_log.jsonl, pulled back via SSH) on every render pass -- both the normal
+            // path (so a healthy render's shape is visible for comparison) and any caught exception
+            // (with the actual error/stack, since a client-side JS throw has no server-side trace
+            // otherwise). Fire-and-forget, never blocks rendering on the log call succeeding.
+            function sendDiag(payload) {
+                try {
+                    fetch("/api/client_debug_log", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ feature: "policy_tree_graphic", ip: ip, ...payload }),
+                        keepalive: true,
+                    }).catch(() => {});
+                } catch (e) {}
+            }
+
             function renderGraphic(tree) {
                 graphicContainer.textContent = "";
                 if (!tree) {
                     graphicContainer.textContent = "No matched, enabled policies found for this host.";
+                    sendDiag({ stage: "renderGraphic_null_tree" });
                     return;
                 }
-                const positioned = layoutTree(tree);
-                const flat = flattenPositioned(positioned, []);
-                const maxX = Math.max(...flat.map(p => p.x)) + NODE_W;
-                const maxY = Math.max(...flat.map(p => p.y)) + NODE_H;
+                try {
+                    const positioned = layoutTree(tree);
+                    const flat = flattenPositioned(positioned, []);
+                    const maxX = Math.max(...flat.map(p => p.x)) + NODE_W;
+                    const maxY = Math.max(...flat.map(p => p.y)) + NODE_H;
 
-                const highlightSet = new Set(initialIds);
-                const pathSet = new Set();
-                (function markPaths(pos) {
-                    let selfOrDescendantHighlighted = highlightSet.has(pos.node.id);
-                    pos.children.forEach(c => { if (markPaths(c)) selfOrDescendantHighlighted = true; });
-                    if (selfOrDescendantHighlighted && !highlightSet.has(pos.node.id)) pathSet.add(pos.node.id);
-                    return selfOrDescendantHighlighted;
-                })(positioned);
+                    const highlightSet = new Set(initialIds);
+                    const pathSet = new Set();
+                    (function markPaths(pos) {
+                        let selfOrDescendantHighlighted = highlightSet.has(pos.node.id);
+                        pos.children.forEach(c => { if (markPaths(c)) selfOrDescendantHighlighted = true; });
+                        if (selfOrDescendantHighlighted && !highlightSet.has(pos.node.id)) pathSet.add(pos.node.id);
+                        return selfOrDescendantHighlighted;
+                    })(positioned);
 
-                const svg = document.createElementNS(svgNS, "svg");
-                svg.setAttribute("width", maxX + 20);
-                svg.setAttribute("height", maxY + 20);
-                svg.setAttribute("viewBox", "-10 -10 " + (maxX + 20) + " " + (maxY + 20));
+                    const svg = document.createElementNS(svgNS, "svg");
+                    svg.setAttribute("width", maxX + 20);
+                    svg.setAttribute("height", maxY + 20);
+                    svg.setAttribute("viewBox", "-10 -10 " + (maxX + 20) + " " + (maxY + 20));
 
-                (function drawEdges(pos) {
-                    pos.children.forEach(c => {
-                        const x1 = pos.x + NODE_W / 2, y1 = pos.y + NODE_H;
-                        const x2 = c.x + NODE_W / 2, y2 = c.y;
-                        const midY = (y1 + y2) / 2;
-                        const path = document.createElementNS(svgNS, "path");
-                        path.setAttribute("class", "tree-graphic-edge");
-                        path.setAttribute("d", `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`);
-                        svg.appendChild(path);
-                        drawEdges(c);
-                    });
-                })(positioned);
-
-                (function drawNode(pos) {
-                    const node = pos.node;
-                    const classes = ["tree-graphic-node", "tree-graphic-" + node.type];
-                    if (node.type === "rule" && !node.enabled) classes.push("tree-graphic-disabled");
-                    if (highlightSet.has(node.id)) classes.push("tree-graphic-highlight");
-                    else if (pathSet.has(node.id)) classes.push("tree-graphic-path");
-                    if (pos.collapsed) classes.push("tree-graphic-collapsed");
-
-                    const g = document.createElementNS(svgNS, "g");
-                    g.setAttribute("class", classes.join(" "));
-                    g.setAttribute("transform", "translate(" + pos.x + "," + pos.y + ")");
-
-                    const rect = document.createElementNS(svgNS, "rect");
-                    rect.setAttribute("width", NODE_W);
-                    rect.setAttribute("height", NODE_H);
-                    rect.setAttribute("rx", 5);
-                    g.appendChild(rect);
-
-                    let label = node.name || "";
-                    if (node.type === "inner_rule" && node.action_enabled) label += " ●";
-                    if (label.length > 26) label = label.slice(0, 25) + "…";
-                    const text = document.createElementNS(svgNS, "text");
-                    text.setAttribute("x", 6);
-                    text.setAttribute("y", NODE_H / 2 + 4);
-                    text.textContent = label;
-                    g.appendChild(text);
-
-                    if (pos.hasChildren) {
-                        const marker = document.createElementNS(svgNS, "text");
-                        marker.setAttribute("x", NODE_W - 16);
-                        marker.setAttribute("y", NODE_H / 2 + 4);
-                        marker.setAttribute("class", "tree-graphic-collapse-marker");
-                        marker.textContent = pos.collapsed ? "[+]" : "[-]";
-                        g.appendChild(marker);
-                        g.addEventListener("click", () => {
-                            if (collapsedIds.has(node.id)) collapsedIds.delete(node.id); else collapsedIds.add(node.id);
-                            renderGraphic(tree);
+                    (function drawEdges(pos) {
+                        pos.children.forEach(c => {
+                            const x1 = pos.x + NODE_W / 2, y1 = pos.y + NODE_H;
+                            const x2 = c.x + NODE_W / 2, y2 = c.y;
+                            const midY = (y1 + y2) / 2;
+                            const path = document.createElementNS(svgNS, "path");
+                            path.setAttribute("class", "tree-graphic-edge");
+                            path.setAttribute("d", `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`);
+                            svg.appendChild(path);
+                            drawEdges(c);
                         });
+                    })(positioned);
+
+                    (function drawNode(pos) {
+                        const node = pos.node;
+                        const classes = ["tree-graphic-node", "tree-graphic-" + node.type];
+                        if (node.type === "rule" && !node.enabled) classes.push("tree-graphic-disabled");
+                        if (highlightSet.has(node.id)) classes.push("tree-graphic-highlight");
+                        else if (pathSet.has(node.id)) classes.push("tree-graphic-path");
+                        if (pos.collapsed) classes.push("tree-graphic-collapsed");
+
+                        const g = document.createElementNS(svgNS, "g");
+                        g.setAttribute("class", classes.join(" "));
+                        g.setAttribute("transform", "translate(" + pos.x + "," + pos.y + ")");
+
+                        const rect = document.createElementNS(svgNS, "rect");
+                        rect.setAttribute("width", NODE_W);
+                        rect.setAttribute("height", NODE_H);
+                        rect.setAttribute("rx", 5);
+                        g.appendChild(rect);
+
+                        let label = node.name || "";
+                        if (node.type === "inner_rule" && node.action_enabled) label += " ●";
+                        if (label.length > 26) label = label.slice(0, 25) + "…";
+                        const text = document.createElementNS(svgNS, "text");
+                        text.setAttribute("x", 6);
+                        text.setAttribute("y", NODE_H / 2 + 4);
+                        text.textContent = label;
+                        g.appendChild(text);
+
+                        if (pos.hasChildren) {
+                            const marker = document.createElementNS(svgNS, "text");
+                            marker.setAttribute("x", NODE_W - 16);
+                            marker.setAttribute("y", NODE_H / 2 + 4);
+                            marker.setAttribute("class", "tree-graphic-collapse-marker");
+                            marker.textContent = pos.collapsed ? "[+]" : "[-]";
+                            g.appendChild(marker);
+                            g.addEventListener("click", () => {
+                                if (collapsedIds.has(node.id)) collapsedIds.delete(node.id); else collapsedIds.add(node.id);
+                                renderGraphic(tree);
+                            });
+                        }
+
+                        svg.appendChild(g);
+                        pos.children.forEach(drawNode);
+                    })(positioned);
+
+                    graphicContainer.appendChild(svg);
+                    if (highlightSet.size) {
+                        const first = svg.querySelector(".tree-graphic-highlight");
+                        if (first) first.scrollIntoView({ block: "center", inline: "center" });
                     }
-
-                    svg.appendChild(g);
-                    pos.children.forEach(drawNode);
-                })(positioned);
-
-                graphicContainer.appendChild(svg);
-                if (highlightSet.size) {
-                    const first = svg.querySelector(".tree-graphic-highlight");
-                    if (first) first.scrollIntoView({ block: "center", inline: "center" });
+                    sendDiag({
+                        stage: "renderGraphic_success", node_count: flat.length,
+                        top_level_children: (tree.children || []).length,
+                        svg_width: maxX + 20, svg_height: maxY + 20,
+                        highlight_count: highlightSet.size,
+                    });
+                } catch (e) {
+                    console.error("renderGraphic failed:", e);
+                    graphicContainer.textContent = "Graphic view failed to render (logged for investigation).";
+                    sendDiag({
+                        stage: "renderGraphic_error",
+                        error: String((e && e.message) || e),
+                        stack: e && e.stack ? String(e.stack).slice(0, 2000) : null,
+                        top_level_children: (tree.children || []).length,
+                    });
                 }
             }
 
@@ -971,6 +1007,12 @@
                     container.appendChild(buildNode(treeToShow));
                     applyHighlight(initialIds);
                 }
+                sendDiag({
+                    stage: "render", filtered: filtered,
+                    full_tree_children: (fullTree.children || []).length,
+                    tree_to_show_children: treeToShow ? (treeToShow.children || []).length : null,
+                    matched_set_size: matchedSet.size, initial_ids_count: initialIds.length,
+                });
                 renderGraphic(treeToShow);
             }
 
@@ -981,6 +1023,7 @@
                     const showGraphic = btn.dataset.treeView === "graphic";
                     container.style.display = showGraphic ? "none" : "";
                     graphicContainer.style.display = showGraphic ? "" : "none";
+                    sendDiag({ stage: "tab_click", tab: btn.dataset.treeView });
                 });
             });
 
