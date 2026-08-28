@@ -260,14 +260,8 @@
                         </select>
                         <span class="muted" id="tree-window-status-{{ slug }}"></span>
                     </div>
-                    <div class="tree-view-tabs" id="tree-view-tabs-{{ slug }}">
-                        <button type="button" class="tree-view-tab-btn active" data-tree-view="current">Current view</button>
-                        <button type="button" class="tree-view-tab-btn" data-tree-view="graphic">Graphic view</button>
-                    </div>
-                    <div id="policy-tree-{{ slug }}" data-ip="{{ result.ip }}" data-initial-ids="{{ result.last_checked.rule_ids|tojson|forceescape }}">
-                        Loading tree…
-                    </div>
-                    <div id="policy-tree-graphic-{{ slug }}" class="tree-graphic-container" style="display:none">
+                    <p class="hint">Click and drag to pan around the tree.</p>
+                    <div id="policy-tree-graphic-{{ slug }}" class="tree-graphic-container" data-initial-ids="{{ result.last_checked.rule_ids|tojson|forceescape }}">
                     </div>
                 </div>
 
@@ -737,15 +731,13 @@
         // first IP's element.
         (function () {
             const ip = "{{ result.ip }}";
-            const container = document.getElementById("policy-tree-{{ slug }}");
             const graphicContainer = document.getElementById("policy-tree-graphic-{{ slug }}");
-            const viewTabs = document.getElementById("tree-view-tabs-{{ slug }}");
             const filterCheckbox = document.getElementById("tree-filter-{{ slug }}");
             const windowValue = document.getElementById("tree-window-value-{{ slug }}");
             const windowUnit = document.getElementById("tree-window-unit-{{ slug }}");
             const windowStatus = document.getElementById("tree-window-status-{{ slug }}");
             let initialIds = [];
-            try { initialIds = JSON.parse(container.dataset.initialIds || "[]"); } catch (e) {}
+            try { initialIds = JSON.parse(graphicContainer.dataset.initialIds || "[]"); } catch (e) {}
             let matchedSet = new Set();
             let fullTree = null;
 
@@ -772,22 +764,6 @@
                     .catch(err => { windowStatus.textContent = "failed to load: " + err; });
             }
 
-            function buildNode(node) {
-                const isLeaf = node.type !== "folder";
-                const wrapper = document.createElement(isLeaf && node.children.length === 0 ? "div" : "details");
-                if (wrapper.tagName === "DETAILS") wrapper.open = false;
-
-                const label = document.createElement(wrapper.tagName === "DETAILS" ? "summary" : "span");
-                label.textContent = node.name + (node.type === "rule" && !node.enabled ? " (disabled)" : "")
-                    + (node.type === "inner_rule" && node.action_enabled ? " ●" : "");
-                label.className = "tree-label tree-" + node.type;
-                label.dataset.ruleId = node.id || "";
-                wrapper.appendChild(label);
-
-                (node.children || []).forEach(child => wrapper.appendChild(buildNode(child)));
-                return wrapper;
-            }
-
             // Prunes the tree down to: rule nodes that are both enabled
             // AND in matchedSet, inner_rule nodes in matchedSet, and any
             // folder that still has a surviving descendant after that --
@@ -809,42 +785,53 @@
                 return matchedSet.has(node.id) ? node : null;
             }
 
-            function applyHighlight(ids) {
-                container.querySelectorAll(".tree-highlight, .tree-path")
-                    .forEach(el => el.classList.remove("tree-highlight", "tree-path"));
-                let firstMatch = null;
-                ids.forEach(id => {
-                    const el = container.querySelector('[data-rule-id="' + id + '"]');
-                    if (!el) return;
-                    if (!firstMatch) firstMatch = el;
-                    el.classList.add("tree-highlight");
-                    // Highlight every ancestor folder/rule's own label too, not
-                    // just the matched leaf -- this shows *which branch of the
-                    // tree* matched, not just a single node buried deep.
-                    let node = el.closest("details");
-                    while (node) {
-                        node.open = true;
-                        const ownLabel = node.querySelector(":scope > summary");
-                        if (ownLabel && ownLabel !== el) ownLabel.classList.add("tree-path");
-                        node = node.parentElement ? node.parentElement.closest("details") : null;
-                    }
-                });
-                if (firstMatch) firstMatch.scrollIntoView({ block: "center" });
-            }
-
-            // Graphic view -- David's ask, 2026-08-26: a diagram representation of the policy tree, as a
-            // second tab alongside the existing collapsible-list view, sharing the same fetched tree,
-            // matched-window filter, and highlighted-rule state (recomputed together in render() below, not
-            // a separate fetch/highlight pass). A plain custom SVG node-link layout, not an external
-            // charting library -- avoids adding an outbound/CDN dependency for what's really a simple tree
-            // shape, and the default "matched only" filter keeps the typical render small (a handful of
-            // nodes); the unfiltered full NINHS tree (2712 nodes) is large but scrollable, and every node
-            // with children is click-to-collapse so it stays navigable. collapsedIds persists across
-            // re-renders (filter toggle, window change) so expand/collapse state isn't lost by an unrelated
-            // control changing.
+            // Graphic view -- David's ask, 2026-08-26, now the *only* tree view (the older
+            // collapsible-list "Current view" was removed 2026-08-28 in favour of this one plus
+            // click-and-drag panning, see the mousedown/mousemove/mouseup block below). A plain
+            // custom SVG node-link layout, not an external charting library -- avoids adding an
+            // outbound/CDN dependency for what's really a simple tree shape, and the default
+            // "matched only" filter keeps the typical render small (a handful of nodes); the
+            // unfiltered full NINHS tree (2712 nodes) is large but pannable/scrollable, and every
+            // node with children is click-to-collapse so it stays navigable. collapsedIds persists
+            // across re-renders (filter toggle, window change) so expand/collapse state isn't lost
+            // by an unrelated control changing.
             const svgNS = "http://www.w3.org/2000/svg";
             const NODE_W = 170, NODE_H = 26, H_GAP = 16, V_GAP = 46;
             const collapsedIds = new Set();
+
+            // Click-and-drag panning -- David's ask, 2026-08-28, replacing the removed "Current
+            // view" tab as the way to navigate a large tree. dragMoved distinguishes an actual
+            // drag from a plain click so a node's own click-to-collapse handler (below) still
+            // works normally -- only suppressed once the mouse has moved more than a few pixels
+            // since mousedown. Listens on window for mousemove/mouseup (not just the container) so
+            // a drag that briefly leaves the container while the button is still held doesn't get
+            // stuck "dragging forever."
+            let isDragging = false, dragMoved = false, dragStartX = 0, dragStartY = 0, scrollStartX = 0, scrollStartY = 0;
+            graphicContainer.style.cursor = "grab";
+            graphicContainer.addEventListener("mousedown", (e) => {
+                if (e.button !== 0) return; // left button only
+                isDragging = true;
+                dragMoved = false;
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+                scrollStartX = graphicContainer.scrollLeft;
+                scrollStartY = graphicContainer.scrollTop;
+                graphicContainer.style.cursor = "grabbing";
+                e.preventDefault(); // stop text/SVG selection while dragging
+            });
+            window.addEventListener("mousemove", (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - dragStartX;
+                const dy = e.clientY - dragStartY;
+                if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
+                graphicContainer.scrollLeft = scrollStartX - dx;
+                graphicContainer.scrollTop = scrollStartY - dy;
+            });
+            window.addEventListener("mouseup", () => {
+                if (!isDragging) return;
+                isDragging = false;
+                graphicContainer.style.cursor = "grab";
+            });
 
             function layoutTree(root) {
                 let leafX = 0;
@@ -964,6 +951,7 @@
                             marker.textContent = pos.collapsed ? "[+]" : "[-]";
                             g.appendChild(marker);
                             g.addEventListener("click", () => {
+                                if (dragMoved) return; // this click ended a drag -- don't also toggle collapse
                                 if (collapsedIds.has(node.id)) collapsedIds.delete(node.id); else collapsedIds.add(node.id);
                                 renderGraphic(tree);
                             });
@@ -1000,13 +988,6 @@
                 if (!fullTree) return;
                 const filtered = filterCheckbox.checked;
                 const treeToShow = filtered ? filterNode(fullTree) : fullTree;
-                container.textContent = "";
-                if (!treeToShow) {
-                    container.textContent = "No matched, enabled policies found for this host.";
-                } else {
-                    container.appendChild(buildNode(treeToShow));
-                    applyHighlight(initialIds);
-                }
                 sendDiag({
                     stage: "render", filtered: filtered,
                     full_tree_children: (fullTree.children || []).length,
@@ -1016,17 +997,6 @@
                 renderGraphic(treeToShow);
             }
 
-            viewTabs.querySelectorAll(".tree-view-tab-btn").forEach(btn => {
-                btn.addEventListener("click", () => {
-                    viewTabs.querySelectorAll(".tree-view-tab-btn").forEach(b => b.classList.remove("active"));
-                    btn.classList.add("active");
-                    const showGraphic = btn.dataset.treeView === "graphic";
-                    container.style.display = showGraphic ? "none" : "";
-                    graphicContainer.style.display = showGraphic ? "" : "none";
-                    sendDiag({ stage: "tab_click", tab: btn.dataset.treeView });
-                });
-            });
-
             filterCheckbox.addEventListener("change", render);
             windowValue.addEventListener("change", fetchMatchedAndRender);
             windowUnit.addEventListener("change", fetchMatchedAndRender);
@@ -1034,11 +1004,11 @@
             fetch("/api/policytree")
                 .then(r => r.json())
                 .then(tree => {
-                    if (tree.error) { container.textContent = "Error: " + tree.error; return; }
+                    if (tree.error) { graphicContainer.textContent = "Error: " + tree.error; return; }
                     fullTree = tree;
                     fetchMatchedAndRender();
                 })
-                .catch(err => { container.textContent = "Failed to load policy tree: " + err; });
+                .catch(err => { graphicContainer.textContent = "Failed to load policy tree: " + err; });
         })();
 
         // Policy match history's adjustable time period -- a real
