@@ -2824,7 +2824,17 @@ def do_arplist(ip):
     print(json.dumps({"ip": ip, "arp_list": arp_list}))
 
 
-APPLIANCE_ONLINE_RE = re.compile(r"^([\d.]+): Done in")
+# Was IP-only (r"^([\d.]+): Done in") -- real bug found live, 2026-08-28, on a customer
+# environment (HSC Belfast) whose appliances are registered by DNS name, not IP: `fstool
+# oneach` echoes back whatever identifier it targeted (a hostname like "belfscout01" there,
+# not an IP), so the old pattern silently matched none of them -- every DNS-named appliance
+# showed "offline" in the Appliances tab even though `fstool oneach` reached it fine, and
+# get_all_targets() (same regex, used far more broadly -- debug-target selection, plugin
+# detection) silently excluded every one of them too. That's the real root cause behind
+# "fails to collect host data from the appliances" for DNS-named environments -- distinct
+# from (and in addition to) the ssh_appliance/_resolve_target_host fix. Now matches any
+# non-whitespace token before ": Done in", IP or hostname alike.
+APPLIANCE_ONLINE_RE = re.compile(r"^([^\s:]+): Done in")
 
 
 def do_appliances():
