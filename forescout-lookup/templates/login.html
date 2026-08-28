@@ -4,10 +4,16 @@
     <meta charset="utf-8">
     <title>Forescout Tech Support Log Collection Tool -- Login</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='forescout-brand.css') }}">
 </head>
 <body>
-    <main style="max-width:26em; margin:4rem auto;">
-        <h1>Forescout Tech Support Log Collection Tool</h1>
+    <div class="forescout-header">
+        <img src="{{ url_for('static', filename='images/forescout-logo.png') }}" alt="Forescout">
+        <div class="forescout-header-title">
+            Forescout Tech Support Log Collection Tool
+        </div>
+    </div>
+    <main style="max-width:26em; margin:2rem auto;">
         <p class="subtitle">Sign in to continue.</p>
 
         {% if error %}

@@ -4,9 +4,16 @@
     <meta charset="utf-8">
     <title>Forescout Tech Support Log Collection Tool -- Certificates</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='forescout-brand.css') }}">
 </head>
 <body>
-    <main style="max-width:40em; margin:4rem auto;">
+    <div class="forescout-header">
+        <img src="{{ url_for('static', filename='images/forescout-logo.png') }}" alt="Forescout">
+        <div class="forescout-header-title">
+            Forescout Tech Support Log Collection Tool
+        </div>
+    </div>
+    <main style="max-width:40em; margin:2rem auto;">
         <h1>HTTPS Certificate</h1>
         <p class="subtitle"><a href="{{ url_for('index') }}">&laquo; Back to the app</a></p>
 

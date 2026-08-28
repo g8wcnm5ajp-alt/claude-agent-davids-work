@@ -4,7 +4,7 @@
     --border: #2a3346;
     --text: #e4e8f1;
     --muted: #8b95ab;
-    --accent: #5b9dff;
+    --accent: #00aeef; /* Forescout brand blue, pulled from the real Console's own CSS (2026-08-28) */
     --wired: #4fb477;
     --wireless: #c98fe0;
     --both: #e0a850;
